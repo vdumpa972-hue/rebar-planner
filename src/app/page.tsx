@@ -9,6 +9,7 @@ import {
 } from "@/lib/rebarEngine";
 import { extractDetectedValuesFromPlanText } from "@/lib/planDataExtractor";
 import { extractPdfTextFromFile } from "@/lib/planPdfReader";
+import { analyzePlanText, type PlanRecognitionReport } from "@/lib/planRecognition";
 
 type ExtractedField = {
   key: string;
@@ -138,6 +139,7 @@ export default function Home() {
   const [extractionStatus, setExtractionStatus] = useState("");
   const [extractionNotes, setExtractionNotes] = useState<string[]>([]);
   const [extractedTextPreview, setExtractedTextPreview] = useState("");
+  const [recognitionReport, setRecognitionReport] = useState<PlanRecognitionReport | null>(null);
   const [horizontalLap, setHorizontalLap] = useState("24");
   const [verticalBentLap, setVerticalBentLap] = useState("6");
   const [stickLength, setStickLength] = useState("20");
@@ -201,6 +203,7 @@ export default function Home() {
     setExtractionStatus("");
     setExtractionNotes([]);
     setExtractedTextPreview("");
+    setRecognitionReport(null);
     setFieldSources(getInitialFieldSources());
   }
 
@@ -217,6 +220,7 @@ export default function Home() {
     setExtractionStatus("");
     setExtractionNotes([]);
     setExtractedTextPreview("");
+    setRecognitionReport(null);
     setFieldSources(getInitialFieldSources());
   }
 
@@ -261,7 +265,8 @@ export default function Home() {
     try {
       setExtractionStatus("Reading PDF text...");
       const text = await extractPdfTextFromFile(planFile);
-      setExtractedTextPreview(text.slice(0, 2500));
+      setExtractedTextPreview(text.slice(0, 5000));
+      setRecognitionReport(analyzePlanText(text));
 
       const result = extractDetectedValuesFromPlanText(text);
       applyDetectedValues(result.detectedValues);
@@ -559,6 +564,68 @@ export default function Home() {
                     <li key={index}>{note}</li>
                   ))}
                 </ul>
+              </div>
+            )}
+
+
+
+            {recognitionReport && (
+              <div className="mt-4 rounded border bg-white p-3 text-sm">
+                <h3 className="mb-2 font-semibold">Plan Recognition Workbench</h3>
+                <div className="mb-3 grid gap-2 md:grid-cols-3">
+                  <div className="rounded border p-2">
+                    <strong>Pages read</strong><br />
+                    {recognitionReport.pages.length}
+                  </div>
+                  <div className="rounded border p-2">
+                    <strong>Unique dimensions</strong><br />
+                    {recognitionReport.dimensions.length}
+                  </div>
+                  <div className="rounded border p-2">
+                    <strong>Keyword hits</strong><br />
+                    {recognitionReport.keywordSnippets.length}
+                  </div>
+                </div>
+
+                <details className="mb-3 rounded border p-2" open>
+                  <summary className="cursor-pointer font-semibold">Likely foundation dimensions</summary>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {recognitionReport.dimensions.slice(0, 35).map((dimension) => (
+                      <span
+                        key={dimension.value}
+                        title={`Found on page(s): ${dimension.pages.join(", ")}`}
+                        className="rounded border bg-gray-50 px-2 py-1 font-mono text-xs"
+                      >
+                        {dimension.value} × {dimension.count}
+                      </span>
+                    ))}
+                  </div>
+                </details>
+
+                <details className="mb-3 rounded border p-2">
+                  <summary className="cursor-pointer font-semibold">Important keyword snippets</summary>
+                  <div className="mt-2 max-h-72 overflow-auto">
+                    {recognitionReport.keywordSnippets.slice(0, 30).map((hit, index) => (
+                      <div key={`${hit.keyword}-${hit.pageNumber}-${index}`} className="mb-2 rounded bg-gray-50 p-2">
+                        <div className="font-semibold">Page {hit.pageNumber} · {hit.keyword}</div>
+                        <div className="font-mono text-xs text-gray-700">{hit.snippet}</div>
+                      </div>
+                    ))}
+                  </div>
+                </details>
+
+                <details className="rounded border p-2">
+                  <summary className="cursor-pointer font-semibold">Page-by-page scan</summary>
+                  <div className="mt-2 max-h-72 overflow-auto">
+                    {recognitionReport.pages.map((page) => (
+                      <div key={page.pageNumber} className="mb-2 rounded bg-gray-50 p-2">
+                        <div className="font-semibold">Page {page.pageNumber}</div>
+                        <div>Dimensions: {page.dimensionCount} · Keywords: {page.keywordHits.join(", ") || "none"}</div>
+                        <div className="mt-1 font-mono text-xs text-gray-600">{page.preview}</div>
+                      </div>
+                    ))}
+                  </div>
+                </details>
               </div>
             )}
 
