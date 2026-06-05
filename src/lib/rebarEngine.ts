@@ -26,6 +26,16 @@ export type PieceTypeSummary = {
   totalCut: string;
 };
 
+export type MaterialTakeoffLine = {
+  group: string;
+  totalCut: string;
+  stockLength: string;
+  sticksToBuy: number;
+  availableLength: string;
+  waste: string;
+  status: string;
+};
+
 function roundToNearestSixteenth(value: number) {
   return Math.round(value * 16) / 16;
 }
@@ -251,6 +261,28 @@ export function buildPieceTypeSummary(schedule: ScheduleLine[]) {
       totalCut: formatFeet(totalCutFeet),
     } satisfies PieceTypeSummary;
   });
+}
+
+
+export function buildMaterialTakeoff(schedule: ScheduleLine[], stockLengthFeet: number) {
+  if (schedule.length === 0) return [];
+
+  const totalCutFeet = sumFeet(schedule.map((line) => line.cutLength));
+  const sticksToBuy = Math.ceil(totalCutFeet / stockLengthFeet);
+  const availableFeet = sticksToBuy * stockLengthFeet;
+  const wasteFeet = Math.max(availableFeet - totalCutFeet, 0);
+
+  const overall: MaterialTakeoffLine = {
+    group: "All Horizontal Bars",
+    totalCut: formatFeet(totalCutFeet),
+    stockLength: formatFeet(stockLengthFeet),
+    sticksToBuy,
+    availableLength: formatFeet(availableFeet),
+    waste: formatFeet(wasteFeet),
+    status: wasteFeet < 0.02 ? "Perfect use" : "OK - extra stock/waste shown",
+  };
+
+  return [overall];
 }
 
 export function scheduleToCsv(schedule: ScheduleLine[]) {

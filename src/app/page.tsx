@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import {
   ScheduleLine,
+  buildMaterialTakeoff,
   buildPieceTypeSummary,
   buildSchedule,
   buildScheduleSummary,
@@ -51,6 +52,7 @@ export default function Home() {
 
   const summary = useMemo(() => buildScheduleSummary(schedule), [schedule]);
   const pieceTypeSummary = useMemo(() => buildPieceTypeSummary(schedule), [schedule]);
+  const materialTakeoff = useMemo(() => buildMaterialTakeoff(schedule, Number(stickLength) || 20), [schedule, stickLength]);
 
   const filteredSchedule = useMemo(() => {
     if (pieceFilter === "ALL") return schedule;
@@ -355,7 +357,41 @@ export default function Home() {
             </div>
           ) : (
             <div className="grid gap-6">
-              <div className="overflow-x-auto rounded border">
+              <div>
+                <h3 className="mb-2 text-xl font-semibold">Material Takeoff / Buy List</h3>
+                <div className="overflow-x-auto rounded border">
+                  <table className="w-full border-collapse text-left">
+                    <thead className="bg-gray-100">
+                      <tr>
+                        <th className="border-b p-3">Group</th>
+                        <th className="border-b p-3">Total Cut</th>
+                        <th className="border-b p-3">Stock Length</th>
+                        <th className="border-b p-3">Sticks to Buy</th>
+                        <th className="border-b p-3">Available Length</th>
+                        <th className="border-b p-3">Waste</th>
+                        <th className="border-b p-3">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {materialTakeoff.map((item) => (
+                        <tr key={item.group} className="bg-blue-50">
+                          <td className="border-b p-3 font-bold">{item.group}</td>
+                          <td className="border-b p-3 font-bold">{item.totalCut}</td>
+                          <td className="border-b p-3">{item.stockLength}</td>
+                          <td className="border-b p-3 text-xl font-bold">{item.sticksToBuy}</td>
+                          <td className="border-b p-3">{item.availableLength}</td>
+                          <td className="border-b p-3 font-bold">{item.waste}</td>
+                          <td className="border-b p-3 font-bold text-blue-800">{item.status}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div>
+                <h3 className="mb-2 text-xl font-semibold">Piece Type Summary</h3>
+                <div className="overflow-x-auto rounded border">
                 <table className="w-full border-collapse text-left">
                   <thead className="bg-gray-100">
                     <tr>
@@ -376,9 +412,12 @@ export default function Home() {
                     ))}
                   </tbody>
                 </table>
+                </div>
               </div>
 
-              <div className="overflow-x-auto rounded border">
+              <div>
+                <h3 className="mb-2 text-xl font-semibold">Required vs Used Check</h3>
+                <div className="overflow-x-auto rounded border">
                 <table className="w-full border-collapse text-left">
                   <thead className="bg-gray-100">
                     <tr>
@@ -403,9 +442,12 @@ export default function Home() {
                     ))}
                   </tbody>
                 </table>
+                </div>
               </div>
 
-              <div className="overflow-x-auto rounded border">
+              <div>
+                <h3 className="mb-2 text-xl font-semibold">Detailed Piece Schedule</h3>
+                <div className="overflow-x-auto rounded border">
                 <table className="w-full border-collapse text-left">
                   <thead className="bg-gray-100">
                     <tr>
@@ -434,6 +476,7 @@ export default function Home() {
                     ))}
                   </tbody>
                 </table>
+                </div>
               </div>
             </div>
           )}
