@@ -7,11 +7,21 @@ import {
   type ScheduleLine,
   type SummaryLine,
 } from "@/lib/rebarEngine";
+import { extractDetectedValuesFromPlanText } from "@/lib/planDataExtractor";
+import { extractPdfTextFromFile } from "@/lib/planPdfReader";
 
 type ExtractedField = {
   key: string;
   label: string;
   value: string;
+};
+
+type FieldSourceKind = "pdf" | "calculated" | "default" | "manual" | "blank";
+
+type FieldSource = {
+  kind: FieldSourceKind;
+  confidence?: "high" | "medium" | "low";
+  reason?: string;
 };
 
 const initialFields: ExtractedField[] = [
@@ -44,16 +54,95 @@ const initialFields: ExtractedField[] = [
   { key: "rebarCallouts", label: "Rebar Callouts", value: "" },
 ];
 
+const fieldHelp: Record<string, string> = {
+  sideWallLength: `Overall long foundation wall length. Example: 52'-0". Used for side horizontal rebar runs.`,
+  sideBaseOuterLength: `Outer footing/base rebar required length. For this ADU default formula: side wall + 3".`,
+  sideBaseMiddleLength: `Middle footing/base rebar required length. For this ADU default formula: side wall - 3".`,
+  sideBaseInnerLength: `Inner footing/base rebar required length. For this ADU default formula: side wall - 9".`,
+  endWallLength: `Foundation end-wall width. Example: 13'-4". Used for end wall horizontal rebar runs.`,
+  sideAboveGrade: `Concrete stem wall height visible above finished grade on side walls.`,
+  endAboveGrade: `Concrete stem wall height visible above finished grade on end walls.`,
+  belowGradeEmbed: `Concrete stem wall depth below grade. Used to calculate total concrete wall height.`,
+  sideTotalHeight: `Side wall total concrete height = above-grade height + below-grade embed.`,
+  endTotalHeight: `End wall total concrete height = above-grade height + below-grade embed.`,
+  wallThickness: `Concrete stem wall thickness. Example: 6".`,
+  footingDepth: `Footing depth used in vertical bar calculations. Example: 18".`,
+  sideVerticalQty: `Total quantity of V-S vertical bars on both side walls. Verify against the plan.`,
+  sideVerticalBottomClearance: `Clearance from footing bottom to start of side vertical bar. Usually 3".`,
+  sideVerticalTopClearance: `Clearance from top of side wall to top of vertical bar. Used around vent/opening areas.`,
+  sideVerticalUsedHeight: `Optional override. Leave blank for automatic calculation from total height minus top/bottom clearance.`,
+  endVerticalQty: `Total quantity of V-E vertical bars on both end walls. Verify against the plan.`,
+  endVerticalBottomClearance: `Clearance from footing bottom to start of end vertical bar. Usually 3".`,
+  endVerticalTopClearance: `Clearance from top of end wall to top of vertical bar.`,
+  endVerticalUsedHeight: `Optional override. Leave blank for automatic calculation from total height minus top/bottom clearance.`,
+  baseShortVerticalQty: `Quantity of small 12" base vertical pieces tying footing steel to the stem wall steel.`,
+  baseShortVerticalCutLength: `Cut length for each small base vertical piece. Current default is 12".`,
+  footingSize: `Footing size callout from plan. Example: 18" x 18".`,
+  ptSillPlates: `Pressure-treated sill plates sitting on the concrete stem wall. Used when deriving concrete height from beam/grade dimensions.`,
+  pierCount: `Total number of pier cages/support piers. Verify against plan marks.`,
+  pierDiameter: `Pier/sonotube diameter. Example: 28".`,
+  rebarCallouts: `Important rebar notes found on the plan, such as #4, V-E, V-S, pier cages, or spacing.`,
+};
+
+const calculatedFieldKeys = new Set([
+  "sideBaseOuterLength",
+  "sideBaseMiddleLength",
+  "sideBaseInnerLength",
+  "sideTotalHeight",
+  "endTotalHeight",
+]);
+
+function getInitialFieldSources(): Record<string, FieldSource> {
+  return Object.fromEntries(
+    initialFields.map((field) => [field.key, { kind: "blank" as FieldSourceKind }])
+  );
+}
+
+function getFieldSourceStyle(source: FieldSource) {
+  if (source.kind === "pdf") {
+    return { badge: "PDF", badgeClass: "bg-green-100 text-green-800 border-green-300", inputClass: "border-green-300 bg-green-50" };
+  }
+  if (source.kind === "calculated") {
+    return { badge: "Calc", badgeClass: "bg-blue-100 text-blue-800 border-blue-300", inputClass: "border-blue-300 bg-blue-50" };
+  }
+  if (source.kind === "default") {
+    return { badge: "Verify", badgeClass: "bg-yellow-100 text-yellow-900 border-yellow-300", inputClass: "border-yellow-300 bg-yellow-50" };
+  }
+  if (source.kind === "manual") {
+    return { badge: "Manual", badgeClass: "bg-gray-100 text-gray-800 border-gray-300", inputClass: "border-gray-400 bg-white" };
+  }
+  return { badge: "Blank", badgeClass: "bg-white text-gray-500 border-gray-300", inputClass: "border-gray-300 bg-white" };
+}
+
+function makeTooltip(field: ExtractedField, source: FieldSource) {
+  const parts = [fieldHelp[field.key] || "Confirm this value before fabrication."];
+  if (source.kind !== "blank") {
+    parts.push(`Source: ${source.kind}`);
+  }
+  if (source.confidence) {
+    parts.push(`Confidence: ${source.confidence}`);
+  }
+  if (source.reason) {
+    parts.push(source.reason);
+  }
+  return parts.join("\n");
+}
+
 export default function Home() {
   const [projectName, setProjectName] = useState("ADU Foundation");
   const [planFileName, setPlanFileName] = useState("");
   const [planFileType, setPlanFileType] = useState("");
   const [planFileSize, setPlanFileSize] = useState(0);
   const [planPreviewUrl, setPlanPreviewUrl] = useState("");
+  const [planFile, setPlanFile] = useState<File | null>(null);
+  const [extractionStatus, setExtractionStatus] = useState("");
+  const [extractionNotes, setExtractionNotes] = useState<string[]>([]);
+  const [extractedTextPreview, setExtractedTextPreview] = useState("");
   const [horizontalLap, setHorizontalLap] = useState("24");
   const [verticalBentLap, setVerticalBentLap] = useState("6");
   const [stickLength, setStickLength] = useState("20");
   const [fields, setFields] = useState<ExtractedField[]>(initialFields);
+  const [fieldSources, setFieldSources] = useState<Record<string, FieldSource>>(getInitialFieldSources());
   const [schedule, setSchedule] = useState<ScheduleLine[]>([]);
   const [summary, setSummary] = useState<SummaryLine[]>([]);
   const [materialTakeoff, setMaterialTakeoff] = useState<MaterialTakeoff | null>(null);
@@ -90,6 +179,11 @@ export default function Home() {
         field.key === key ? { ...field, value } : field
       )
     );
+
+    setFieldSources((current) => ({
+      ...current,
+      [key]: value.trim() ? { kind: "manual", reason: "Changed by user on screen." } : { kind: "blank" },
+    }));
   }
 
   function handlePlanUpload(file: File | undefined) {
@@ -102,7 +196,12 @@ export default function Home() {
     setPlanFileName(file.name);
     setPlanFileType(file.type || "unknown");
     setPlanFileSize(file.size);
+    setPlanFile(file);
     setPlanPreviewUrl(URL.createObjectURL(file));
+    setExtractionStatus("");
+    setExtractionNotes([]);
+    setExtractedTextPreview("");
+    setFieldSources(getInitialFieldSources());
   }
 
   function clearPlan() {
@@ -114,6 +213,72 @@ export default function Home() {
     setPlanFileType("");
     setPlanFileSize(0);
     setPlanPreviewUrl("");
+    setPlanFile(null);
+    setExtractionStatus("");
+    setExtractionNotes([]);
+    setExtractedTextPreview("");
+    setFieldSources(getInitialFieldSources());
+  }
+
+  function applyDetectedValues(
+    values: { key: string; value: string; confidence?: "high" | "medium" | "low"; reason?: string }[]
+  ) {
+    setFields((current) =>
+      current.map((field) => {
+        const detected = values.find((value) => value.key === field.key);
+        return detected ? { ...field, value: detected.value } : field;
+      })
+    );
+
+    setFieldSources((current) => {
+      const next = { ...current };
+      for (const item of values) {
+        const isCalculated = calculatedFieldKeys.has(item.key);
+        const isDefault = item.confidence === "low" && /default|confirm|assumption|calculated/i.test(item.reason || "");
+        next[item.key] = {
+          kind: isCalculated ? "calculated" : isDefault ? "default" : "pdf",
+          confidence: item.confidence,
+          reason: item.reason,
+        };
+      }
+      return next;
+    });
+  }
+
+  async function extractPlanData() {
+    if (!planFile) {
+      setExtractionStatus("No file uploaded. Using sample values for now.");
+      fillSampleData();
+      return;
+    }
+
+    if (!planFile.type.includes("pdf")) {
+      setExtractionStatus("Image OCR is not connected yet. Using sample values for now.");
+      fillSampleData();
+      return;
+    }
+
+    try {
+      setExtractionStatus("Reading PDF text...");
+      const text = await extractPdfTextFromFile(planFile);
+      setExtractedTextPreview(text.slice(0, 2500));
+
+      const result = extractDetectedValuesFromPlanText(text);
+      applyDetectedValues(result.detectedValues);
+      setExtractionNotes([
+        ...result.notes,
+        ...result.detectedValues.map(
+          (item) => `${item.key}: ${item.value} (${item.confidence}) - ${item.reason}`
+        ),
+      ]);
+      setExtractionStatus(
+        `PDF text extracted. ${result.detectedValues.length} values were filled. Please confirm every value before generating.`
+      );
+    } catch (error) {
+      console.error(error);
+      setExtractionStatus("Could not read PDF text. Using sample values for now.");
+      fillSampleData();
+    }
   }
 
   function fillSampleData() {
@@ -345,7 +510,7 @@ export default function Home() {
 
               <button
                 type="button"
-                onClick={fillSampleData}
+                onClick={extractPlanData}
                 className="rounded bg-blue-600 p-3 font-semibold text-white hover:bg-blue-700"
               >
                 Extract Plan Data
@@ -385,6 +550,26 @@ export default function Home() {
                 />
               </div>
             )}
+
+            {extractionNotes.length > 0 && (
+              <div className="mt-4 rounded border bg-gray-50 p-3 text-sm">
+                <h3 className="mb-2 font-semibold">PDF Extraction Notes</h3>
+                <ul className="max-h-48 list-disc overflow-auto pl-5 text-gray-700">
+                  {extractionNotes.map((note, index) => (
+                    <li key={index}>{note}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {extractedTextPreview && (
+              <details className="mt-4 rounded border bg-white p-3 text-sm">
+                <summary className="cursor-pointer font-semibold">Show first PDF text extracted</summary>
+                <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap rounded bg-gray-100 p-3 text-xs">
+                  {extractedTextPreview}
+                </pre>
+              </details>
+            )}
           </section>
 
           <section className="rounded-lg bg-white p-6 shadow">
@@ -392,20 +577,46 @@ export default function Home() {
               Confirm Detected Values
             </h2>
 
+            <div className="mb-4 grid gap-2 text-xs sm:grid-cols-2">
+              <div className="rounded border border-green-300 bg-green-50 p-2 text-green-800"><strong>PDF</strong> = read from PDF text</div>
+              <div className="rounded border border-blue-300 bg-blue-50 p-2 text-blue-800"><strong>Calc</strong> = calculated by formula</div>
+              <div className="rounded border border-yellow-300 bg-yellow-50 p-2 text-yellow-900"><strong>Verify</strong> = default/assumption</div>
+              <div className="rounded border border-gray-300 bg-gray-50 p-2 text-gray-800"><strong>Manual</strong> = changed by user</div>
+            </div>
+
             <div className="grid gap-3">
-              {fields.map((field) => (
-                <div key={field.key}>
-                  <label className="mb-1 block font-semibold">
-                    {field.label}
-                  </label>
-                  <input
-                    value={field.value}
-                    onChange={(e) => updateField(field.key, e.target.value)}
-                    placeholder="Enter or confirm value"
-                    className="w-full rounded border p-2"
-                  />
-                </div>
-              ))}
+              {fields.map((field) => {
+                const source = fieldSources[field.key] || { kind: "blank" as FieldSourceKind };
+                const sourceStyle = getFieldSourceStyle(source);
+                const tooltip = makeTooltip(field, source);
+
+                return (
+                  <div key={field.key}>
+                    <label className="mb-1 flex items-center gap-2 font-semibold">
+                      <span>{field.label}</span>
+                      <span
+                        title={tooltip}
+                        className={`inline-flex h-5 w-5 cursor-help items-center justify-center rounded-full border text-xs ${sourceStyle.badgeClass}`}
+                      >
+                        i
+                      </span>
+                      <span
+                        title={tooltip}
+                        className={`rounded border px-2 py-0.5 text-[10px] font-bold uppercase ${sourceStyle.badgeClass}`}
+                      >
+                        {sourceStyle.badge}
+                      </span>
+                    </label>
+                    <input
+                      value={field.value}
+                      onChange={(e) => updateField(field.key, e.target.value)}
+                      placeholder="Enter or confirm value"
+                      title={tooltip}
+                      className={`w-full rounded border p-2 ${sourceStyle.inputClass}`}
+                    />
+                  </div>
+                );
+              })}
             </div>
 
             <button
