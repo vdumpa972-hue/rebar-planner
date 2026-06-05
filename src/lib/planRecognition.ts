@@ -114,7 +114,7 @@ function findKeywordSnippets(pageText: string, pageNumber: number): KeywordSnipp
   return snippets;
 }
 
-function scoreFoundationPage(pageText: string, dimensions: string[], keywordHits: string[]) {
+function scoreFoundationPage(pageText: string, dimensions: string[], keywordHits: string[]): { score: number; confidence: "high" | "medium" | "low"; reason: string } {
   const text = normalizeSpaces(pageText).toLowerCase();
   let score = 0;
   const reasons: string[] = [];
@@ -155,7 +155,7 @@ function scoreFoundationPage(pageText: string, dimensions: string[], keywordHits
     reasons.push(`noise keywords: ${negativeHits.join(", ")}`);
   }
 
-  const confidence = score >= 14 ? "high" : score >= 7 ? "medium" : "low";
+  const confidence: "high" | "medium" | "low" = score >= 14 ? "high" : score >= 7 ? "medium" : "low";
 
   return {
     score,

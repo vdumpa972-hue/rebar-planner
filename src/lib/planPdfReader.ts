@@ -5,9 +5,10 @@ export async function extractPdfTextFromFile(file: File): Promise<string> {
 
   // Load PDF.js only in the browser. This avoids Next.js/Turbopack trying to
   // evaluate PDF.js during server-side rendering, where DOMMatrix is not defined.
-  const pdfjsLib = await import(
-    /* webpackIgnore: true */ "https://unpkg.com/pdfjs-dist@5.4.296/build/pdf.mjs"
-  );
+  // Function() keeps TypeScript from trying to resolve the HTTPS module at build time.
+  const pdfjsLib = (await Function(
+    'return import("https://unpkg.com/pdfjs-dist@5.4.296/build/pdf.mjs")'
+  )()) as any;
 
   // Use the matching browser worker from the same PDF.js version.
   pdfjsLib.GlobalWorkerOptions.workerSrc =
@@ -22,7 +23,7 @@ export async function extractPdfTextFromFile(file: File): Promise<string> {
     const textContent = await page.getTextContent();
 
     const pageText = textContent.items
-      .map((item) => ("str" in item ? item.str : ""))
+      .map((item: { str?: string }) => ("str" in item ? item.str || "" : ""))
       .join(" ");
 
     pageTexts.push(`--- PAGE ${pageNumber} ---\n${pageText}`);

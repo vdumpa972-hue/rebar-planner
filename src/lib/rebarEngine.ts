@@ -28,6 +28,8 @@ export type MaterialTakeoff = {
   sticksToBuy: number;
   availableLength: string;
   waste: string;
+  cutCount: number;
+  bendCount: number;
 };
 
 export type RebarResult = {
@@ -240,6 +242,37 @@ function buildSmallBaseVerticalGroup(params: {
   ];
 }
 
+
+function buildPierInfoGroup(params: {
+  hasPiers: boolean;
+  pierCount: number;
+  pierDiameter: string;
+  pierHeight: string;
+}): ScheduleLine[] {
+  const { hasPiers, pierCount, pierDiameter, pierHeight } = params;
+  if (!hasPiers || !pierCount || pierCount <= 0) return [];
+
+  return [
+    {
+      mark: "PC",
+      prefix: "PC",
+      location: `Pier cages / sonotubes (${pierDiameter || "diameter not entered"} dia, ${pierHeight || "height not entered"} high)`,
+      requiredLength: `${pierDiameter || "diameter not entered"} dia x ${pierHeight || "height not entered"} high each`,
+      cutLength: "field built",
+      leftFunction: "pier cage detail",
+      usedLength: `${pierCount} piers`,
+      rightFunction: "verify cage steel",
+      fieldOrder:
+        `Pier count confirmed by user: ${pierCount}. Diameter: ${pierDiameter || "not entered"}. ` +
+        `Height/cage height: ${pierHeight || "not entered"}. ` +
+        "Detailed pier cage bar schedule will be added in the next step.",
+      totalUsedFeet: 0,
+      cutFeet: 0,
+      qty: pierCount,
+    },
+  ];
+}
+
 function summarize(schedule: ScheduleLine[]): SummaryLine[] {
   const groups = new Map<string, ScheduleLine[]>();
 
@@ -253,6 +286,16 @@ function summarize(schedule: ScheduleLine[]): SummaryLine[] {
   return Array.from(groups.entries()).map(([key, lines]) => {
     const [prefix, description, requiredLength] = key.split("__");
     const totalQty = lines.reduce((sum, line) => sum + line.qty, 0);
+    if (prefix === "PC") {
+      return {
+        prefix,
+        description,
+        qty: totalQty,
+        requiredLength,
+        totalUsed: `${totalQty} piers`,
+        status: "Pier details entered - cage steel to be detailed next",
+      };
+    }
     const totalUsedFeet = lines.reduce((sum, line) => sum + line.totalUsedFeet * line.qty, 0);
     const requiredPerUnitFeet = parseFeet(requiredLength);
     const requiredCompareFeet = requiredLength.includes("each")
@@ -272,7 +315,14 @@ function summarize(schedule: ScheduleLine[]): SummaryLine[] {
 }
 
 function getMaterialTakeoff(schedule: ScheduleLine[], stockFeet: number): MaterialTakeoff {
-  const totalCutFeet = schedule.reduce((sum, line) => sum + line.cutFeet * line.qty, 0);
+  const cutLines = schedule.filter((line) => line.cutFeet > 0);
+  const totalCutFeet = cutLines.reduce((sum, line) => sum + line.cutFeet * line.qty, 0);
+  const cutCount = cutLines.reduce((sum, line) => sum + line.qty, 0);
+  const bendCount = cutLines.reduce((sum, line) => {
+    const functions = `${line.leftFunction} ${line.rightFunction}`.toLowerCase();
+    const bendsPerPiece = functions.includes("bent") ? 1 : 0;
+    return sum + bendsPerPiece * line.qty;
+  }, 0);
   const sticksToBuy = totalCutFeet > 0 ? Math.ceil(totalCutFeet / stockFeet) : 0;
   const availableFeet = sticksToBuy * stockFeet;
   const wasteFeet = Math.max(availableFeet - totalCutFeet, 0);
@@ -283,6 +333,8 @@ function getMaterialTakeoff(schedule: ScheduleLine[], stockFeet: number): Materi
     sticksToBuy,
     availableLength: formatFeet(availableFeet),
     waste: formatFeet(wasteFeet),
+    cutCount,
+    bendCount,
   };
 }
 
@@ -330,6 +382,10 @@ export function generateRebarSchedule(params: {
   endVerticalTopClearance?: string;
   baseShortVerticalQty?: string;
   baseShortVerticalCutLength?: string;
+  hasPiers?: boolean;
+  pierCount?: string;
+  pierDiameter?: string;
+  pierHeight?: string;
 }): RebarResult {
   const sideFeet = parseFeet(params.sideWallLength);
   const sideBaseOuterFeet = parseFeet(params.sideBaseOuterLength || "") || sideFeet;
@@ -366,6 +422,15 @@ export function generateRebarSchedule(params: {
   });
   const baseShortVerticalQty = Number(params.baseShortVerticalQty || 0);
   const baseShortVerticalCutFeet = parseFeet(params.baseShortVerticalCutLength || "") || parseFeet("12\"");
+  const pierCount = Number(params.pierCount || 0);
+  const pierDiameter = params.pierDiameter || "";
+  const pierHeight = params.pierHeight || "";
+  const hasPiers = Boolean(
+    params.hasPiers &&
+      pierCount > 0 &&
+      pierDiameter.trim() &&
+      pierHeight.trim()
+  );
 
   const schedule: ScheduleLine[] = [];
 
@@ -466,6 +531,15 @@ export function generateRebarSchedule(params: {
       location: "Small 12 in Base Verticals",
       qty: baseShortVerticalQty,
       cutFeet: baseShortVerticalCutFeet,
+    })
+  );
+
+  schedule.push(
+    ...buildPierInfoGroup({
+      hasPiers,
+      pierCount,
+      pierDiameter,
+      pierHeight,
     })
   );
 

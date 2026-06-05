@@ -1,0 +1,19 @@
+AI Pier Finder setup
+====================
+
+1) Create .env.local in the rebar-planner project root:
+
+OPENAI_API_KEY=your_openai_api_key_here
+# Optional:
+# OPENAI_PIER_MODEL=gpt-4.1
+
+2) Restart the dev server:
+
+Ctrl+C
+npm run dev
+
+3) Upload the PDF and click Extract Plan Data.
+
+4) Open "AI pier finder" and click "Find piers with AI".
+
+The AI result does not automatically overwrite the form. Review the count and then click "Apply AI pier count to form" only if it looks right.

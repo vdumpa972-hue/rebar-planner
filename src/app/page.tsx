@@ -52,6 +52,7 @@ const initialFields: ExtractedField[] = [
   { key: "ptSillPlates", label: "PT Sill Plates", value: "" },
   { key: "pierCount", label: "Pier Count", value: "" },
   { key: "pierDiameter", label: "Pier Diameter", value: "" },
+  { key: "pierHeight", label: "Pier Height / Cage Height", value: "" },
   { key: "rebarCallouts", label: "Rebar Callouts", value: "" },
 ];
 
@@ -82,6 +83,7 @@ const fieldHelp: Record<string, string> = {
   ptSillPlates: `Pressure-treated sill plates sitting on the concrete stem wall. Used when deriving concrete height from beam/grade dimensions.`,
   pierCount: `Total number of pier cages/support piers. Verify against plan marks.`,
   pierDiameter: `Pier/sonotube diameter. Example: 28".`,
+  pierHeight: `Pier concrete height or cage height to use for pier cage planning. Example: 30" or 2'-6". Enter from plan or field measurement.`,
   rebarCallouts: `Important rebar notes found on the plan, such as #4, V-E, V-S, pier cages, or spacing.`,
 };
 
@@ -140,6 +142,7 @@ export default function Home() {
   const [extractionNotes, setExtractionNotes] = useState<string[]>([]);
   const [extractedTextPreview, setExtractedTextPreview] = useState("");
   const [recognitionReport, setRecognitionReport] = useState<PlanRecognitionReport | null>(null);
+  const [showDebugInfo, setShowDebugInfo] = useState(false);
   const [horizontalLap, setHorizontalLap] = useState("24");
   const [verticalBentLap, setVerticalBentLap] = useState("6");
   const [stickLength, setStickLength] = useState("20");
@@ -151,6 +154,9 @@ export default function Home() {
   const [selectedMark, setSelectedMark] = useState("");
   const [selectedPrefix, setSelectedPrefix] = useState("");
   const [filter, setFilter] = useState("ALL");
+  const [pierMode, setPierMode] = useState<"unknown" | "yes" | "none">("unknown");
+  const [pierDialogOpen, setPierDialogOpen] = useState(false);
+  const [pierMessage, setPierMessage] = useState("");
 
   const fileSizeLabel = useMemo(() => {
     if (!planFileSize) return "";
@@ -204,7 +210,10 @@ export default function Home() {
     setExtractionNotes([]);
     setExtractedTextPreview("");
     setRecognitionReport(null);
+    setShowDebugInfo(false);
     setFieldSources(getInitialFieldSources());
+    setPierMode("unknown");
+    setPierMessage("");
   }
 
   function clearPlan() {
@@ -221,7 +230,10 @@ export default function Home() {
     setExtractionNotes([]);
     setExtractedTextPreview("");
     setRecognitionReport(null);
+    setShowDebugInfo(false);
     setFieldSources(getInitialFieldSources());
+    setPierMode("unknown");
+    setPierMessage("");
   }
 
   function applyDetectedValues(
@@ -326,15 +338,47 @@ export default function Home() {
       },
       { key: "pierCount", label: "Pier Count", value: "14" },
       { key: "pierDiameter", label: "Pier Diameter", value: "28\"" },
+      { key: "pierHeight", label: "Pier Height / Cage Height", value: "" },
       {
         key: "rebarCallouts",
         label: "Rebar Callouts",
         value: "#4 horizontal, V-E, V-S, pier cages",
       },
     ]);
+    setPierMode("unknown");
+    setPierMessage("Pier details were loaded from defaults/PDF. Please confirm them before generating.");
+  }
+
+  function savePierDetails(mode: "yes" | "none") {
+    if (mode === "none") {
+      updateField("pierCount", "0");
+      updateField("pierDiameter", "");
+      updateField("pierHeight", "");
+      setPierMode("none");
+      setPierMessage("No piers selected. The schedule will skip pier cages.");
+      setPierDialogOpen(false);
+      return;
+    }
+
+    const count = Number(getFieldValue("pierCount") || 0);
+    const diameter = getFieldValue("pierDiameter").trim();
+    const height = getFieldValue("pierHeight").trim();
+    if (!count || count <= 0 || !diameter || !height) {
+      setPierMessage("Enter pier count, pier diameter, and pier height/cage height, or choose I do not have piers.");
+      return;
+    }
+
+    setPierMode("yes");
+    setPierMessage(`Pier details confirmed: ${count} piers, diameter ${diameter}, height ${height}.`);
+    setPierDialogOpen(false);
   }
 
   function generateSchedule() {
+    if (pierMode === "unknown") {
+      setPierDialogOpen(true);
+      setPierMessage("Confirm pier details before generating, or choose I do not have piers.");
+      return;
+    }
     const result = generateRebarSchedule({
       sideWallLength: getFieldValue("sideWallLength"),
       sideBaseOuterLength: getFieldValue("sideBaseOuterLength"),
@@ -357,6 +401,10 @@ export default function Home() {
       endVerticalUsedHeight: getFieldValue("endVerticalUsedHeight"),
       baseShortVerticalQty: getFieldValue("baseShortVerticalQty"),
       baseShortVerticalCutLength: getFieldValue("baseShortVerticalCutLength"),
+      hasPiers: pierMode === "yes",
+      pierCount: getFieldValue("pierCount"),
+      pierDiameter: getFieldValue("pierDiameter"),
+      pierHeight: getFieldValue("pierHeight"),
     });
 
     setSchedule(result.schedule);
@@ -424,6 +472,79 @@ export default function Home() {
   return (
     <main className="min-h-screen bg-gray-100 p-6">
       <div className="mx-auto max-w-7xl">
+        {pierDialogOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+            <div className="w-full max-w-xl rounded-lg bg-white p-6 shadow-xl">
+              <h2 className="text-2xl font-bold">Enter Pier Details</h2>
+              <p className="mt-2 text-sm text-gray-600">
+                Confirm this before calculation. The app will not guess the final pier count from OCR/image detection.
+              </p>
+
+              <div className="mt-4 grid gap-4">
+                <label className="block">
+                  <span className="mb-1 block font-semibold">Pier Count</span>
+                  <input
+                    value={getFieldValue("pierCount")}
+                    onChange={(event) => updateField("pierCount", event.target.value)}
+                    placeholder="Example: 14"
+                    className="w-full rounded border p-2"
+                  />
+                </label>
+                <label className="block">
+                  <span className="mb-1 block font-semibold">Pier Diameter</span>
+                  <input
+                    value={getFieldValue("pierDiameter")}
+                    onChange={(event) => updateField("pierDiameter", event.target.value)}
+                    placeholder={'Example: 28"'}
+                    className="w-full rounded border p-2"
+                  />
+                </label>
+                <label className="block">
+                  <span className="mb-1 block font-semibold">Pier Height / Cage Height</span>
+                  <input
+                    value={getFieldValue("pierHeight")}
+                    onChange={(event) => updateField("pierHeight", event.target.value)}
+                    placeholder={`Example: 30" or 2'-6"`}
+                    className="w-full rounded border p-2"
+                  />
+                  <span className="mt-1 block text-xs text-gray-500">
+                    Enter the pier concrete height or the rebar cage height you want the schedule to reference.
+                  </span>
+                </label>
+              </div>
+
+              {pierMessage && (
+                <div className="mt-3 rounded border border-yellow-300 bg-yellow-50 p-2 text-sm text-yellow-900">
+                  {pierMessage}
+                </div>
+              )}
+
+              <div className="mt-5 flex flex-wrap justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => savePierDetails("none")}
+                  className="rounded border border-gray-400 px-4 py-2 font-semibold hover:bg-gray-50"
+                >
+                  I do not have piers
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPierDialogOpen(false)}
+                  className="rounded border border-gray-400 px-4 py-2 font-semibold hover:bg-gray-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => savePierDetails("yes")}
+                  className="rounded bg-purple-700 px-4 py-2 font-semibold text-white hover:bg-purple-800"
+                >
+                  Save Pier Details
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
         <div className="mb-6 rounded-lg bg-white p-6 shadow">
           <h1 className="text-4xl font-bold text-gray-900">Rebar Planner</h1>
           <p className="mt-2 text-gray-600">
@@ -432,7 +553,7 @@ export default function Home() {
           </p>
         </div>
 
-        <div className="grid gap-6 xl:grid-cols-3">
+        <div className="grid gap-6 xl:grid-cols-2">
           <section className="rounded-lg bg-white p-6 shadow">
             <h2 className="mb-4 text-2xl font-semibold">Project Setup</h2>
 
@@ -529,10 +650,6 @@ export default function Home() {
                 Extract Plan Data
               </button>
 
-              <div className="rounded border border-yellow-300 bg-yellow-50 p-3 text-sm text-yellow-900">
-                For now, “Extract Plan Data” fills sample values. Later this
-                button will read the uploaded PDF/image automatically. Base O/M/I required lengths are separate because each base line can have a different path length. Vertical bars calculate used height from stem height + footing depth - bottom/top clearance unless an override is entered.
-              </div>
             </div>
           </section>
 
@@ -564,7 +681,18 @@ export default function Home() {
               </div>
             )}
 
-            {extractionNotes.length > 0 && (
+            {(extractionNotes.length > 0 || recognitionReport || extractedTextPreview) && (
+              <label className="mt-4 flex items-center gap-2 rounded border bg-gray-50 p-3 text-sm font-semibold text-gray-700">
+                <input
+                  type="checkbox"
+                  checked={showDebugInfo}
+                  onChange={(event) => setShowDebugInfo(event.target.checked)}
+                />
+                Show PDF extraction / developer debug info
+              </label>
+            )}
+
+            {showDebugInfo && extractionNotes.length > 0 && (
               <div className="mt-4 rounded border bg-gray-50 p-3 text-sm">
                 <h3 className="mb-2 font-semibold">PDF Extraction Notes</h3>
                 <ul className="max-h-48 list-disc overflow-auto pl-5 text-gray-700">
@@ -575,9 +703,7 @@ export default function Home() {
               </div>
             )}
 
-
-
-            {recognitionReport && (
+            {showDebugInfo && recognitionReport && (
               <div className="mt-4 rounded border bg-white p-3 text-sm">
                 <h3 className="mb-2 font-semibold">Plan Recognition Workbench</h3>
                 <div className="mb-3 grid gap-2 md:grid-cols-3">
@@ -672,7 +798,7 @@ export default function Home() {
               </div>
             )}
 
-            {extractedTextPreview && (
+            {showDebugInfo && extractedTextPreview && (
               <details className="mt-4 rounded border bg-white p-3 text-sm">
                 <summary className="cursor-pointer font-semibold">Show first PDF text extracted</summary>
                 <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap rounded bg-gray-100 p-3 text-xs">
@@ -681,20 +807,21 @@ export default function Home() {
               </details>
             )}
           </section>
+        </div>
 
-          <section className="rounded-lg bg-white p-6 shadow">
-            <h2 className="mb-4 text-2xl font-semibold">
-              Confirm Detected Values
-            </h2>
+        <section className="mt-6 rounded-lg bg-white p-6 shadow">
+          <h2 className="mb-4 text-2xl font-semibold">
+            Confirm Detected Values
+          </h2>
 
-            <div className="mb-4 grid gap-2 text-xs sm:grid-cols-2">
+          <div className="mb-4 grid gap-2 text-xs md:grid-cols-4">
               <div className="rounded border border-green-300 bg-green-50 p-2 text-green-800"><strong>PDF</strong> = read from PDF text</div>
               <div className="rounded border border-blue-300 bg-blue-50 p-2 text-blue-800"><strong>Calc</strong> = calculated by formula</div>
               <div className="rounded border border-yellow-300 bg-yellow-50 p-2 text-yellow-900"><strong>Verify</strong> = default/assumption</div>
               <div className="rounded border border-gray-300 bg-gray-50 p-2 text-gray-800"><strong>Manual</strong> = changed by user</div>
             </div>
 
-            <div className="grid gap-3">
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
               {fields.map((field) => {
                 const source = fieldSources[field.key] || { kind: "blank" as FieldSourceKind };
                 const sourceStyle = getFieldSourceStyle(source);
@@ -729,6 +856,29 @@ export default function Home() {
               })}
             </div>
 
+            <div className="mt-5 rounded border border-purple-300 bg-purple-50 p-3 text-sm text-purple-900">
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <strong>Pier Details</strong>
+                  <div className="text-xs">
+                    {pierMode === "unknown"
+                      ? "Not confirmed yet. Required before generating."
+                      : pierMode === "yes"
+                        ? `Confirmed: ${getFieldValue("pierCount") || "?"} piers, ${getFieldValue("pierDiameter") || "diameter ?"}, height ${getFieldValue("pierHeight") || "?"}`
+                        : "No piers selected."}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setPierDialogOpen(true)}
+                  className="rounded bg-purple-700 px-3 py-2 font-semibold text-white hover:bg-purple-800"
+                >
+                  Enter Pier Details
+                </button>
+              </div>
+              {pierMessage && <div className="text-xs">{pierMessage}</div>}
+            </div>
+
             <button
               type="button"
               onClick={generateSchedule}
@@ -736,8 +886,7 @@ export default function Home() {
             >
               Generate Rebar Schedule
             </button>
-          </section>
-        </div>
+        </section>
 
         <section className="mt-6 rounded-lg bg-white p-6 shadow">
           <h2 className="mb-4 text-2xl font-semibold">Piece Naming Legend</h2>
@@ -747,6 +896,7 @@ export default function Home() {
             <div className="rounded border p-3"><strong>WALL B/M/T</strong><br />Stem wall bottom / middle / top</div>
             <div className="rounded border p-3"><strong>V-S / V-E</strong><br />Side/end vertical bars with 6 in bottom bent lap</div>
             <div className="rounded border p-3"><strong>BV-12</strong><br />Small 12 in base verticals</div>
+            <div className="rounded border p-3"><strong>PC</strong><br />Pier cage / sonotube count confirmed by user</div>
           </div>
         </section>
 
@@ -929,12 +1079,14 @@ export default function Home() {
           )}
 
           {materialTakeoff && (
-            <div className="mb-6 grid gap-3 md:grid-cols-5">
+            <div className="mb-6 grid gap-3 md:grid-cols-7">
               <div className="rounded border p-3"><strong>Total Cut</strong><br />{materialTakeoff.totalCut}</div>
               <div className="rounded border p-3"><strong>Stock Length</strong><br />{materialTakeoff.stockLength}</div>
               <div className="rounded border p-3"><strong>Sticks to Buy</strong><br />{materialTakeoff.sticksToBuy}</div>
               <div className="rounded border p-3"><strong>Available</strong><br />{materialTakeoff.availableLength}</div>
               <div className="rounded border p-3"><strong>Waste</strong><br />{materialTakeoff.waste}</div>
+              <div className="rounded border p-3"><strong>Cuts</strong><br />{materialTakeoff.cutCount}</div>
+              <div className="rounded border p-3"><strong>Bends</strong><br />{materialTakeoff.bendCount}</div>
             </div>
           )}
 
