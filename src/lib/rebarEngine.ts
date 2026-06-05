@@ -2,290 +2,241 @@ export type ScheduleLine = {
   mark: string;
   markPrefix: string;
   location: string;
-  requiredLength: string;
-  cutLength: string;
+  requiredLength: number;
+  cutLength: number;
   leftFunction: string;
-  usedLength: string;
+  usedLength: number;
   rightFunction: string;
   fieldOrder: string;
 };
 
-export type ScheduleSummaryLine = {
+export type RequiredCheck = {
   location: string;
-  requiredLength: string;
-  totalUsed: string;
+  requiredLength: number;
+  totalUsed: number;
   pieces: number;
-  totalCut: string;
+  totalCut: number;
   status: string;
+  ok: boolean;
 };
 
 export type PieceTypeSummary = {
   markPrefix: string;
   description: string;
   qty: number;
-  totalCut: string;
+  totalCut: number;
 };
 
-export type MaterialTakeoffLine = {
+export type MaterialTakeoff = {
   group: string;
-  totalCut: string;
-  stockLength: string;
+  totalCut: number;
+  stockLength: number;
   sticksToBuy: number;
-  availableLength: string;
-  waste: string;
+  availableLength: number;
+  waste: number;
   status: string;
 };
 
-function roundToNearestSixteenth(value: number) {
-  return Math.round(value * 16) / 16;
-}
-
-export function parseFeet(value: string) {
+export function parseFeet(value: string): number {
   const clean = value.trim();
   if (!clean) return 0;
 
   const feetMatch = clean.match(/(\d+(?:\.\d+)?)\s*'/);
-  const inchesMatch = clean.match(/(\d+(?:\.\d+)?)\s*"/);
-  const feet = feetMatch ? Number(feetMatch[1]) : 0;
-  const inches = inchesMatch ? Number(inchesMatch[1]) : 0;
+  const inchMatch = clean.match(/(\d+(?:\.\d+)?)\s*"/);
 
-  if (!feetMatch && !inchesMatch) {
+  const feet = feetMatch ? Number(feetMatch[1]) : 0;
+  const inches = inchMatch ? Number(inchMatch[1]) : 0;
+
+  if (!feetMatch && !inchMatch) {
     return Number(clean) || 0;
   }
 
   return feet + inches / 12;
 }
 
-export function formatFeet(value: number) {
-  const rounded = roundToNearestSixteenth(value);
-  const feet = Math.floor(rounded);
-  const inchesTotal = roundToNearestSixteenth((rounded - feet) * 12);
-  const wholeInches = Math.floor(inchesTotal);
-  const fraction = roundToNearestSixteenth(inchesTotal - wholeInches);
-
-  const fractionMap: Record<string, string> = {
-    "0.0625": "1/16",
-    "0.125": "1/8",
-    "0.1875": "3/16",
-    "0.25": "1/4",
-    "0.3125": "5/16",
-    "0.375": "3/8",
-    "0.4375": "7/16",
-    "0.5": "1/2",
-    "0.5625": "9/16",
-    "0.625": "5/8",
-    "0.6875": "11/16",
-    "0.75": "3/4",
-    "0.8125": "13/16",
-    "0.875": "7/8",
-    "0.9375": "15/16",
-  };
-
-  if (wholeInches === 0 && fraction === 0) return `${feet}'`;
-
-  const fractionText = fractionMap[String(fraction)] || "";
-  const inchText = fractionText
-    ? `${wholeInches ? `${wholeInches} ` : ""}${fractionText}`
-    : `${wholeInches}`;
-
-  return `${feet}'-${inchText}"`;
+export function parseNumber(value: string): number {
+  const n = Number(String(value).replace(/[^\d.-]/g, ""));
+  return Number.isFinite(n) ? n : 0;
 }
 
-function sumFeet(values: string[]) {
-  return values.reduce((total, value) => total + parseFeet(value), 0);
+export function formatFeet(value: number): string {
+  const sign = value < 0 ? "-" : "";
+  const absolute = Math.abs(value);
+  let feet = Math.floor(absolute);
+  let inches = Math.round((absolute - feet) * 12);
+
+  if (inches === 12) {
+    feet += 1;
+    inches = 0;
+  }
+
+  if (inches === 0) return `${sign}${feet}'`;
+  return `${sign}${feet}'-${inches}"`;
 }
 
-function makeLine(args: {
-  mark: string;
-  markPrefix: string;
-  location: string;
-  requiredLengthFeet: number;
-  cutFeet: number;
-  leftFunction: string;
-  usedFeet: number;
-  rightFunction: string;
-}) {
-  const requiredLength = formatFeet(args.requiredLengthFeet);
-  const cutLength = formatFeet(args.cutFeet);
-  const usedLength = formatFeet(args.usedFeet);
-
-  const functions = [
-    `${cutLength} cut`,
-    args.leftFunction !== "none" ? args.leftFunction : "",
-    `${usedLength} used`,
-    args.rightFunction !== "none" ? args.rightFunction : "",
-  ].filter(Boolean);
-
-  return {
-    mark: args.mark,
-    markPrefix: args.markPrefix,
-    location: args.location,
-    requiredLength,
-    cutLength,
-    leftFunction: args.leftFunction,
-    usedLength,
-    rightFunction: args.rightFunction,
-    fieldOrder: `${functions.join(" | ")} - OK`,
-  };
-}
-
-export function buildWallLines(args: {
-  markPrefix: string;
-  location: string;
-  wallLengthText: string;
-  stockLengthFeet: number;
-  lapFeet: number;
-  lapAndBentOnFirstLeft?: boolean;
-  lapAndBentOnLastRight?: boolean;
-}) {
-  const wallLength = parseFeet(args.wallLengthText);
-  const stockLength = args.stockLengthFeet || 20;
-  const lapFeet = args.lapFeet;
-
-  if (!wallLength || !stockLength) return [];
+function buildSingleHorizontalRun(
+  markPrefix: string,
+  location: string,
+  requiredLength: number,
+  stockLength: number,
+  lapFeet: number
+): ScheduleLine[] {
+  if (!requiredLength || !stockLength) return [];
 
   const lines: ScheduleLine[] = [];
-  let remainingUsed = wallLength;
+  let remainingRequired = requiredLength;
   let pieceNumber = 1;
 
-  while (remainingUsed > 0.01) {
+  while (remainingRequired > 0.01) {
     const isFirst = pieceNumber === 1;
-    const usedThisPiece = Math.min(remainingUsed, stockLength - lapFeet);
-    const isLast = remainingUsed - usedThisPiece <= 0.01;
+    const isLast = remainingRequired <= stockLength - lapFeet;
 
-    const leftFunction = isFirst && args.lapAndBentOnFirstLeft
-      ? `${formatFeet(lapFeet)} lap & bent`
-      : isFirst
-        ? "none"
-        : `${formatFeet(lapFeet)} lap`;
+    let leftFunction = "none";
+    let rightFunction = "none";
+    let usedLength = 0;
 
-    const rightFunction = isLast && args.lapAndBentOnLastRight
-      ? `${formatFeet(lapFeet)} lap & bent`
-      : "none";
+    if (isFirst && isLast) {
+      usedLength = remainingRequired;
+      leftFunction = "none";
+      rightFunction = "none";
+    } else if (isFirst) {
+      usedLength = stockLength - lapFeet;
+      leftFunction = `${formatFeet(lapFeet)} lap & bent`;
+      rightFunction = "none";
+    } else if (isLast) {
+      usedLength = remainingRequired;
+      leftFunction = `${formatFeet(lapFeet)} lap`;
+      rightFunction = `${formatFeet(lapFeet)} lap & bent`;
+    } else {
+      usedLength = stockLength - lapFeet;
+      leftFunction = `${formatFeet(lapFeet)} lap`;
+      rightFunction = "none";
+    }
 
-    const extraLeft = leftFunction === "none" ? 0 : lapFeet;
-    const extraRight = rightFunction === "none" ? 0 : lapFeet;
-    const cutFeet = usedThisPiece + extraLeft + extraRight;
+    const rightExtra = rightFunction === "none" ? 0 : lapFeet;
+    const cutLength = usedLength + lapFeet + rightExtra;
 
-    lines.push(makeLine({
-      mark: `${args.markPrefix}-${pieceNumber}`,
-      markPrefix: args.markPrefix,
-      location: args.location,
-      requiredLengthFeet: wallLength,
-      cutFeet,
+    const safeCutLength = Math.min(cutLength, stockLength);
+    const mark = `${markPrefix}-${pieceNumber}`;
+
+    const parts = [`${formatFeet(safeCutLength)} cut`];
+    if (leftFunction !== "none") parts.push(leftFunction);
+    parts.push(`${formatFeet(usedLength)} used`);
+    if (rightFunction !== "none") parts.push(rightFunction);
+    parts.push("OK");
+
+    lines.push({
+      mark,
+      markPrefix,
+      location,
+      requiredLength,
+      cutLength: safeCutLength,
       leftFunction,
-      usedFeet: usedThisPiece,
+      usedLength,
       rightFunction,
-    }));
+      fieldOrder: parts.join(" | ").replace(" | OK", " - OK"),
+    });
 
-    remainingUsed -= usedThisPiece;
+    remainingRequired -= usedLength;
     pieceNumber += 1;
   }
 
   return lines;
 }
 
-export function buildSchedule(args: {
-  sideWallLength: string;
-  endWallLength: string;
-  stockLengthFeet: number;
-  horizontalLapInches: number;
-}) {
-  const lapFeet = args.horizontalLapInches / 12;
+export function buildHorizontalRuns(
+  basePrefix: string,
+  baseLocation: string,
+  requiredLengthText: string,
+  runCountText: string,
+  stockLengthText: string,
+  lapInchesText: string
+): ScheduleLine[] {
+  const requiredLength = parseFeet(requiredLengthText);
+  const runCount = Math.max(1, Math.floor(parseNumber(runCountText) || 1));
+  const stockLength = parseNumber(stockLengthText) || 20;
+  const lapFeet = (parseNumber(lapInchesText) || 24) / 12;
 
-  return [
-    ...buildWallLines({
-      markPrefix: "SW-H",
-      location: "Side Wall Horizontal",
-      wallLengthText: args.sideWallLength,
-      stockLengthFeet: args.stockLengthFeet,
-      lapFeet,
-      lapAndBentOnFirstLeft: true,
-      lapAndBentOnLastRight: true,
-    }),
-    ...buildWallLines({
-      markPrefix: "EW-H",
-      location: "End Wall Horizontal",
-      wallLengthText: args.endWallLength,
-      stockLengthFeet: args.stockLengthFeet,
-      lapFeet,
-      lapAndBentOnFirstLeft: true,
-      lapAndBentOnLastRight: true,
-    }),
-  ];
+  const allLines: ScheduleLine[] = [];
+
+  for (let run = 1; run <= runCount; run += 1) {
+    const prefix = `${basePrefix}${run}`;
+    const location =
+      runCount > 1 ? `${baseLocation} Row ${run}` : baseLocation;
+
+    allLines.push(
+      ...buildSingleHorizontalRun(prefix, location, requiredLength, stockLength, lapFeet)
+    );
+  }
+
+  return allLines;
 }
 
-export function buildScheduleSummary(schedule: ScheduleLine[]) {
-  const byLocation = new Map<string, ScheduleLine[]>();
+export function summarizeRequiredChecks(schedule: ScheduleLine[]): RequiredCheck[] {
+  const grouped = new Map<string, ScheduleLine[]>();
 
-  schedule.forEach((line) => {
-    const current = byLocation.get(line.location) || [];
-    current.push(line);
-    byLocation.set(line.location, current);
-  });
+  for (const line of schedule) {
+    const existing = grouped.get(line.location) || [];
+    existing.push(line);
+    grouped.set(line.location, existing);
+  }
 
-  return Array.from(byLocation.entries()).map(([location, lines]) => {
-    const requiredLength = lines[0]?.requiredLength || "0'";
-    const totalUsedFeet = sumFeet(lines.map((line) => line.usedLength));
-    const totalCutFeet = sumFeet(lines.map((line) => line.cutLength));
-    const requiredFeet = parseFeet(requiredLength);
-    const isOk = Math.abs(totalUsedFeet - requiredFeet) < 0.02;
+  return Array.from(grouped.entries()).map(([location, lines]) => {
+    const requiredLength = lines[0]?.requiredLength || 0;
+    const totalUsed = lines.reduce((sum, line) => sum + line.usedLength, 0);
+    const totalCut = lines.reduce((sum, line) => sum + line.cutLength, 0);
+    const ok = Math.abs(requiredLength - totalUsed) < 0.02;
 
     return {
       location,
       requiredLength,
-      totalUsed: formatFeet(totalUsedFeet),
+      totalUsed,
       pieces: lines.length,
-      totalCut: formatFeet(totalCutFeet),
-      status: isOk ? "OK - used adds to required" : "CHECK - used does not match required",
-    } satisfies ScheduleSummaryLine;
+      totalCut,
+      ok,
+      status: ok ? "OK - used adds to required" : "CHECK - used does not match required",
+    };
   });
 }
 
-export function buildPieceTypeSummary(schedule: ScheduleLine[]) {
-  const byPrefix = new Map<string, ScheduleLine[]>();
+export function summarizePieceTypes(schedule: ScheduleLine[]): PieceTypeSummary[] {
+  const grouped = new Map<string, ScheduleLine[]>();
 
-  schedule.forEach((line) => {
-    const current = byPrefix.get(line.markPrefix) || [];
-    current.push(line);
-    byPrefix.set(line.markPrefix, current);
-  });
+  for (const line of schedule) {
+    const existing = grouped.get(line.markPrefix) || [];
+    existing.push(line);
+    grouped.set(line.markPrefix, existing);
+  }
 
-  return Array.from(byPrefix.entries()).map(([markPrefix, lines]) => {
-    const totalCutFeet = sumFeet(lines.map((line) => line.cutLength));
-
-    return {
-      markPrefix,
-      description: lines[0]?.location || markPrefix,
-      qty: lines.length,
-      totalCut: formatFeet(totalCutFeet),
-    } satisfies PieceTypeSummary;
-  });
+  return Array.from(grouped.entries()).map(([markPrefix, lines]) => ({
+    markPrefix,
+    description: lines[0]?.location || markPrefix,
+    qty: lines.length,
+    totalCut: lines.reduce((sum, line) => sum + line.cutLength, 0),
+  }));
 }
 
+export function buildMaterialTakeoff(schedule: ScheduleLine[], stockLengthText: string): MaterialTakeoff[] {
+  const stockLength = parseNumber(stockLengthText) || 20;
+  const totalCut = schedule.reduce((sum, line) => sum + line.cutLength, 0);
+  const sticksToBuy = Math.ceil(totalCut / stockLength);
+  const availableLength = sticksToBuy * stockLength;
+  const waste = availableLength - totalCut;
 
-export function buildMaterialTakeoff(schedule: ScheduleLine[], stockLengthFeet: number) {
-  if (schedule.length === 0) return [];
-
-  const totalCutFeet = sumFeet(schedule.map((line) => line.cutLength));
-  const sticksToBuy = Math.ceil(totalCutFeet / stockLengthFeet);
-  const availableFeet = sticksToBuy * stockLengthFeet;
-  const wasteFeet = Math.max(availableFeet - totalCutFeet, 0);
-
-  const overall: MaterialTakeoffLine = {
-    group: "All Horizontal Bars",
-    totalCut: formatFeet(totalCutFeet),
-    stockLength: formatFeet(stockLengthFeet),
-    sticksToBuy,
-    availableLength: formatFeet(availableFeet),
-    waste: formatFeet(wasteFeet),
-    status: wasteFeet < 0.02 ? "Perfect use" : "OK - extra stock/waste shown",
-  };
-
-  return [overall];
+  return [
+    {
+      group: "All Horizontal Bars",
+      totalCut,
+      stockLength,
+      sticksToBuy,
+      availableLength,
+      waste,
+      status: "OK - extra stock/waste shown",
+    },
+  ];
 }
 
-export function scheduleToCsv(schedule: ScheduleLine[]) {
+export function scheduleToCsv(schedule: ScheduleLine[]): string {
   const headers = [
     "Piece ID",
     "Location",
@@ -300,15 +251,19 @@ export function scheduleToCsv(schedule: ScheduleLine[]) {
   const rows = schedule.map((line) => [
     line.mark,
     line.location,
-    line.requiredLength,
-    line.cutLength,
+    formatFeet(line.requiredLength),
+    formatFeet(line.cutLength),
     line.leftFunction,
-    line.usedLength,
+    formatFeet(line.usedLength),
     line.rightFunction,
     line.fieldOrder,
   ]);
 
   return [headers, ...rows]
-    .map((row) => row.map((cell) => `"${String(cell).replaceAll('"', '""')}"`).join(","))
+    .map((row) =>
+      row
+        .map((cell) => `"${String(cell).replaceAll('"', '""')}"`)
+        .join(",")
+    )
     .join("\n");
 }
