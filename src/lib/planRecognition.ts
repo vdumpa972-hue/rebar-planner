@@ -1,11 +1,24 @@
 export type PlanRecognitionReport = {
   pages: PlanRecognitionPage[];
+  relevantPages: FoundationRelevantPage[];
   dimensions: DimensionCandidate[];
   keywordSnippets: KeywordSnippet[];
+  preferredText: string;
 };
 
-type PlanRecognitionPage = {
+export type PlanRecognitionPage = {
   pageNumber: number;
+  dimensionCount: number;
+  keywordHits: string[];
+  preview: string;
+  text: string;
+};
+
+export type FoundationRelevantPage = {
+  pageNumber: number;
+  score: number;
+  confidence: "high" | "medium" | "low";
+  reason: string;
   dimensionCount: number;
   keywordHits: string[];
   preview: string;
@@ -27,6 +40,7 @@ const IMPORTANT_KEYWORDS = [
   "rebar",
   "stem",
   "footing",
+  "foundation",
   "pier",
   "sonotube",
   "vertical",
@@ -38,6 +52,19 @@ const IMPORTANT_KEYWORDS = [
   "sill",
   "grade",
   "vent",
+];
+
+const NEGATIVE_KEYWORDS = [
+  "stair",
+  "stairs",
+  "handrail",
+  "handrails",
+  "decking",
+  "exterior elevation",
+  "front view",
+  "rear view",
+  "left view",
+  "right view",
 ];
 
 function normalizeSpaces(value: string) {
@@ -87,6 +114,56 @@ function findKeywordSnippets(pageText: string, pageNumber: number): KeywordSnipp
   return snippets;
 }
 
+function scoreFoundationPage(pageText: string, dimensions: string[], keywordHits: string[]) {
+  const text = normalizeSpaces(pageText).toLowerCase();
+  let score = 0;
+  const reasons: string[] = [];
+
+  const positiveRules: Array<[RegExp, number, string]> = [
+    [/foundation/i, 7, "foundation keyword"],
+    [/stem\s*wall/i, 8, "stem wall keyword"],
+    [/footing/i, 6, "footing keyword"],
+    [/#\s*4|#4/i, 4, "#4 rebar callout"],
+    [/rebar/i, 5, "rebar keyword"],
+    [/v[-\s]?s\b|v[-\s]?e\b/i, 5, "V-S/V-E keyword"],
+    [/sonotube|pier/i, 4, "pier/sonotube keyword"],
+    [/anchor|sill|grade|vent/i, 2, "foundation-detail keyword"],
+  ];
+
+  for (const [pattern, points, reason] of positiveRules) {
+    if (pattern.test(text)) {
+      score += points;
+      reasons.push(reason);
+    }
+  }
+
+  const importantDims = ["52'-0\"", "52'", "13'-4\"", "28\"", "18\"", "6\"", "1'-2\"", "12\""];
+  const dimHits = importantDims.filter((dim) => dimensions.includes(dim));
+  if (dimHits.length) {
+    score += Math.min(dimHits.length * 2, 10);
+    reasons.push(`important dimensions: ${dimHits.join(", ")}`);
+  }
+
+  if (keywordHits.length >= 3) {
+    score += 3;
+    reasons.push("multiple foundation keywords");
+  }
+
+  const negativeHits = NEGATIVE_KEYWORDS.filter((word) => text.includes(word));
+  if (negativeHits.length) {
+    score -= Math.min(negativeHits.length * 4, 12);
+    reasons.push(`noise keywords: ${negativeHits.join(", ")}`);
+  }
+
+  const confidence = score >= 14 ? "high" : score >= 7 ? "medium" : "low";
+
+  return {
+    score,
+    confidence,
+    reason: reasons.length ? reasons.join("; ") : "few foundation clues found",
+  };
+}
+
 export function analyzePlanText(text: string): PlanRecognitionReport {
   const pagesRaw = splitPages(text);
   const dimensionMap = new Map<string, { count: number; pages: Set<number> }>();
@@ -109,8 +186,40 @@ export function analyzePlanText(text: string): PlanRecognitionReport {
       dimensionCount: dimensions.length,
       keywordHits: snippets.map((snippet) => snippet.keyword),
       preview: normalizeSpaces(page.text).slice(0, 350),
+      text: page.text,
     };
   });
+
+  const relevantPages = pages
+    .map((page) => {
+      const dimensions = extractDimensions(page.text);
+      const score = scoreFoundationPage(page.text, dimensions, page.keywordHits);
+      return {
+        pageNumber: page.pageNumber,
+        score: score.score,
+        confidence: score.confidence,
+        reason: score.reason,
+        dimensionCount: page.dimensionCount,
+        keywordHits: page.keywordHits,
+        preview: page.preview,
+      };
+    })
+    .filter((page) => page.score > 0)
+    .sort((a, b) => b.score - a.score || a.pageNumber - b.pageNumber);
+
+  const preferredPageNumbers = new Set(
+    relevantPages
+      .filter((page) => page.confidence === "high" || page.confidence === "medium")
+      .slice(0, 6)
+      .map((page) => page.pageNumber)
+  );
+
+  const preferredText = preferredPageNumbers.size
+    ? pages
+        .filter((page) => preferredPageNumbers.has(page.pageNumber))
+        .map((page) => `--- PAGE ${page.pageNumber} ---\n${page.text}`)
+        .join("\n\n")
+    : text;
 
   const dimensions = Array.from(dimensionMap.entries())
     .map(([value, details]) => ({
@@ -125,5 +234,5 @@ export function analyzePlanText(text: string): PlanRecognitionReport {
       return b.count - a.count;
     });
 
-  return { pages, dimensions, keywordSnippets };
+  return { pages, relevantPages, dimensions, keywordSnippets, preferredText };
 }

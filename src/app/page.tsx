@@ -266,11 +266,19 @@ export default function Home() {
       setExtractionStatus("Reading PDF text...");
       const text = await extractPdfTextFromFile(planFile);
       setExtractedTextPreview(text.slice(0, 5000));
-      setRecognitionReport(analyzePlanText(text));
+      const recognition = analyzePlanText(text);
+      setRecognitionReport(recognition);
 
-      const result = extractDetectedValuesFromPlanText(text);
+      const result = extractDetectedValuesFromPlanText(recognition.preferredText || text);
       applyDetectedValues(result.detectedValues);
       setExtractionNotes([
+        recognition.relevantPages.length
+          ? `Foundation page scoring: using page(s) ${recognition.relevantPages
+              .filter((page) => page.confidence === "high" || page.confidence === "medium")
+              .slice(0, 6)
+              .map((page) => page.pageNumber)
+              .join(", ") || "all pages"} first for extraction.`
+          : "Foundation page scoring: no strong page match; using all PDF text.",
         ...result.notes,
         ...result.detectedValues.map(
           (item) => `${item.key}: ${item.value} (${item.confidence}) - ${item.reason}`
@@ -586,6 +594,41 @@ export default function Home() {
                     {recognitionReport.keywordSnippets.length}
                   </div>
                 </div>
+
+                <details className="mb-3 rounded border p-2" open>
+                  <summary className="cursor-pointer font-semibold">Relevant foundation pages</summary>
+                  <div className="mt-2 max-h-72 overflow-auto">
+                    {recognitionReport.relevantPages.length === 0 ? (
+                      <div className="rounded bg-yellow-50 p-2 text-yellow-900">
+                        No strong foundation page found. The extractor is using all PDF text.
+                      </div>
+                    ) : (
+                      recognitionReport.relevantPages.slice(0, 10).map((page) => {
+                        const badgeClass =
+                          page.confidence === "high"
+                            ? "border-green-300 bg-green-50 text-green-800"
+                            : page.confidence === "medium"
+                              ? "border-yellow-300 bg-yellow-50 text-yellow-900"
+                              : "border-gray-300 bg-gray-50 text-gray-700";
+
+                        return (
+                          <div key={page.pageNumber} className="mb-2 rounded border bg-gray-50 p-2">
+                            <div className="mb-1 flex flex-wrap items-center gap-2">
+                              <strong>Page {page.pageNumber}</strong>
+                              <span className={`rounded border px-2 py-0.5 text-xs font-bold uppercase ${badgeClass}`}>
+                                {page.confidence}
+                              </span>
+                              <span className="text-xs text-gray-600">Score: {page.score}</span>
+                              <span className="text-xs text-gray-600">Dims: {page.dimensionCount}</span>
+                            </div>
+                            <div className="text-xs text-gray-700">{page.reason}</div>
+                            <div className="mt-1 font-mono text-xs text-gray-600">{page.preview}</div>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                </details>
 
                 <details className="mb-3 rounded border p-2" open>
                   <summary className="cursor-pointer font-semibold">Likely foundation dimensions</summary>
