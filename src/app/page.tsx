@@ -2,9 +2,11 @@
 
 import { useMemo, useState } from "react";
 import {
-  RebarScheduleLine,
-  RebarScheduleSummary,
-  generateRebarSchedule,
+  ScheduleLine,
+  buildPieceTypeSummary,
+  buildSchedule,
+  buildScheduleSummary,
+  scheduleToCsv,
 } from "@/lib/rebarEngine";
 
 type ExtractedField = {
@@ -22,8 +24,8 @@ export default function Home() {
   const [horizontalLap, setHorizontalLap] = useState("24");
   const [verticalBentLap, setVerticalBentLap] = useState("6");
   const [stickLength, setStickLength] = useState("20");
-  const [schedule, setSchedule] = useState<RebarScheduleLine[]>([]);
-  const [summaries, setSummaries] = useState<RebarScheduleSummary[]>([]);
+  const [schedule, setSchedule] = useState<ScheduleLine[]>([]);
+  const [pieceFilter, setPieceFilter] = useState("ALL");
 
   const [fields, setFields] = useState<ExtractedField[]>([
     { key: "sideWallLength", label: "Side Wall Length", value: "" },
@@ -46,6 +48,14 @@ export default function Home() {
     const mb = planFileSize / 1024 / 1024;
     return `${mb.toFixed(2)} MB`;
   }, [planFileSize]);
+
+  const summary = useMemo(() => buildScheduleSummary(schedule), [schedule]);
+  const pieceTypeSummary = useMemo(() => buildPieceTypeSummary(schedule), [schedule]);
+
+  const filteredSchedule = useMemo(() => {
+    if (pieceFilter === "ALL") return schedule;
+    return schedule.filter((line) => line.markPrefix === pieceFilter);
+  }, [schedule, pieceFilter]);
 
   function getFieldValue(key: string) {
     return fields.find((field) => field.key === key)?.value || "";
@@ -110,15 +120,28 @@ export default function Home() {
   }
 
   function generateSchedule() {
-    const result = generateRebarSchedule({
+    const nextSchedule = buildSchedule({
       sideWallLength: getFieldValue("sideWallLength"),
       endWallLength: getFieldValue("endWallLength"),
-      stickLengthFeet: Number(stickLength) || 20,
-      lapInches: Number(horizontalLap) || 24,
+      stockLengthFeet: Number(stickLength) || 20,
+      horizontalLapInches: Number(horizontalLap) || 24,
     });
 
-    setSchedule(result.lines);
-    setSummaries(result.summaries);
+    setSchedule(nextSchedule);
+    setPieceFilter("ALL");
+  }
+
+  function exportCsv() {
+    if (schedule.length === 0) return;
+
+    const csv = scheduleToCsv(schedule);
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${projectName.replace(/\s+/g, "-").toLowerCase()}-rebar-schedule.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
   }
 
   const isPdf = planFileType.includes("pdf");
@@ -300,15 +323,62 @@ export default function Home() {
         </div>
 
         <section className="mt-6 rounded-lg bg-white p-6 shadow">
-          <h2 className="mb-4 text-2xl font-semibold">Rebar Schedule Output</h2>
+          <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <h2 className="text-2xl font-semibold">Rebar Schedule Output</h2>
+            <div className="flex flex-wrap gap-3">
+              <select
+                value={pieceFilter}
+                onChange={(e) => setPieceFilter(e.target.value)}
+                className="rounded border p-2"
+              >
+                <option value="ALL">All Pieces</option>
+                {pieceTypeSummary.map((item) => (
+                  <option key={item.markPrefix} value={item.markPrefix}>
+                    {item.markPrefix} - {item.description}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={exportCsv}
+                disabled={schedule.length === 0}
+                className="rounded bg-green-700 px-4 py-2 font-semibold text-white hover:bg-green-800 disabled:cursor-not-allowed disabled:bg-gray-400"
+              >
+                Download CSV
+              </button>
+            </div>
+          </div>
 
           {schedule.length === 0 ? (
             <div className="rounded border border-dashed border-gray-300 bg-gray-50 p-6 text-gray-500">
               No schedule generated yet.
             </div>
           ) : (
-            <>
-              <div className="mb-6 overflow-x-auto rounded border">
+            <div className="grid gap-6">
+              <div className="overflow-x-auto rounded border">
+                <table className="w-full border-collapse text-left">
+                  <thead className="bg-gray-100">
+                    <tr>
+                      <th className="border-b p-3">Mark Prefix</th>
+                      <th className="border-b p-3">Description</th>
+                      <th className="border-b p-3">Qty</th>
+                      <th className="border-b p-3">Total Cut</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {pieceTypeSummary.map((item) => (
+                      <tr key={item.markPrefix}>
+                        <td className="border-b p-3 font-bold">{item.markPrefix}</td>
+                        <td className="border-b p-3">{item.description}</td>
+                        <td className="border-b p-3">{item.qty}</td>
+                        <td className="border-b p-3 font-bold">{item.totalCut}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="overflow-x-auto rounded border">
                 <table className="w-full border-collapse text-left">
                   <thead className="bg-gray-100">
                     <tr>
@@ -321,14 +391,14 @@ export default function Home() {
                     </tr>
                   </thead>
                   <tbody>
-                    {summaries.map((summary) => (
-                      <tr key={summary.location} className="bg-green-50">
-                        <td className="border-b p-3 font-bold">{summary.location}</td>
-                        <td className="border-b p-3">{summary.requiredLength}</td>
-                        <td className="border-b p-3 font-bold">{summary.totalUsed}</td>
-                        <td className="border-b p-3">{summary.pieceCount}</td>
-                        <td className="border-b p-3">{summary.totalCut}</td>
-                        <td className="border-b p-3 font-bold text-green-800">{summary.status}</td>
+                    {summary.map((line) => (
+                      <tr key={line.location} className="bg-green-50">
+                        <td className="border-b p-3 font-bold">{line.location}</td>
+                        <td className="border-b p-3">{line.requiredLength}</td>
+                        <td className="border-b p-3 font-bold">{line.totalUsed}</td>
+                        <td className="border-b p-3">{line.pieces}</td>
+                        <td className="border-b p-3">{line.totalCut}</td>
+                        <td className="border-b p-3 font-bold text-green-800">{line.status}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -350,12 +420,12 @@ export default function Home() {
                     </tr>
                   </thead>
                   <tbody>
-                    {schedule.map((line) => (
+                    {filteredSchedule.map((line) => (
                       <tr key={line.mark}>
                         <td className="border-b p-3 font-bold">{line.mark}</td>
                         <td className="border-b p-3">{line.location}</td>
                         <td className="border-b p-3">{line.requiredLength}</td>
-                        <td className="border-b p-3 font-mono">{line.cutLength}</td>
+                        <td className="border-b p-3">{line.cutLength}</td>
                         <td className="border-b p-3">{line.leftFunction}</td>
                         <td className="border-b p-3 font-bold">{line.usedLength}</td>
                         <td className="border-b p-3">{line.rightFunction}</td>
@@ -365,7 +435,7 @@ export default function Home() {
                   </tbody>
                 </table>
               </div>
-            </>
+            </div>
           )}
         </section>
       </div>
