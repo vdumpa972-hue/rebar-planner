@@ -7,9 +7,15 @@ import {
   type ScheduleLine,
   type SummaryLine,
 } from "@/lib/rebarEngine";
-import { extractDetectedValuesFromPlanText } from "@/lib/planDataExtractor";
+import {
+  extractDetectedValuesFromPlanText,
+  type DetectedValue,
+} from "@/lib/planDataExtractor";
 import { extractPdfTextFromFile } from "@/lib/planPdfReader";
-import { analyzePlanText, type PlanRecognitionReport } from "@/lib/planRecognition";
+import {
+  analyzePlanText,
+  type PlanRecognitionReport,
+} from "@/lib/planRecognition";
 
 type ExtractedField = {
   key: string;
@@ -17,7 +23,16 @@ type ExtractedField = {
   value: string;
 };
 
-type FieldSourceKind = "pdf" | "calculated" | "default" | "manual" | "blank";
+type ExtractionMode = "live" | "simulation";
+
+type FieldSourceKind =
+  | "pdf-text"
+  | "pdf-image"
+  | "calculated"
+  | "default"
+  | "manual"
+  | "missing"
+  | "blank";
 
 type FieldSource = {
   kind: FieldSourceKind;
@@ -25,29 +40,87 @@ type FieldSource = {
   reason?: string;
 };
 
+
+type VisualExtractedField = { key: string; value: string; source: string; confidence?: number; evidence?: string; page?: number };
+type VisualPlanAnalysis = {
+  success: boolean; engine?: string; error?: string; notes?: string[]; sourcePolicy?: string;
+  scale?: { px_per_foot: number | null; status: string; confidence?: number; evidence?: string };
+  textEvidence?: { dimensions?: { value: string; page?: number; feet?: number | null }[]; keywords?: unknown[]; full_text_preview?: string };
+  imageAnalysis?: { page: number; error?: string; image_size?: { width: number; height: number }; circles?: { page: number; x: number; y: number; r: number; classification: string; confidence: number; evidence: string }[]; lines?: unknown[] }[];
+  extractedFields?: VisualExtractedField[];
+};
+
 const initialFields: ExtractedField[] = [
   { key: "sideWallLength", label: "Side Wall Length", value: "" },
-  { key: "sideBaseOuterLength", label: "Side Base Outer Required Len (O = side + 3 in)", value: "" },
-  { key: "sideBaseMiddleLength", label: "Side Base Middle Required Len (M = side - 3 in)", value: "" },
-  { key: "sideBaseInnerLength", label: "Side Base Inner Required Len (I = side - 9 in)", value: "" },
+  {
+    key: "sideBaseOuterLength",
+    label: "Side Base Outer Required Len (O = side + 3 in)",
+    value: "",
+  },
+  {
+    key: "sideBaseMiddleLength",
+    label: "Side Base Middle Required Len (M = side - 3 in)",
+    value: "",
+  },
+  {
+    key: "sideBaseInnerLength",
+    label: "Side Base Inner Required Len (I = side - 9 in)",
+    value: "",
+  },
   { key: "endWallLength", label: "End Wall Length", value: "" },
   { key: "sideAboveGrade", label: "Side Wall Above Grade Height", value: "" },
   { key: "endAboveGrade", label: "End Wall Above Grade Height", value: "" },
   { key: "belowGradeEmbed", label: "Below Grade Stem Wall Embed", value: "" },
-  { key: "sideTotalHeight", label: "Side Wall Total Concrete Height", value: "" },
+  {
+    key: "sideTotalHeight",
+    label: "Side Wall Total Concrete Height",
+    value: "",
+  },
   { key: "endTotalHeight", label: "End Wall Total Concrete Height", value: "" },
   { key: "wallThickness", label: "Wall Thickness", value: "" },
   { key: "footingDepth", label: "Footing Depth for Vertical Bars", value: "" },
   { key: "sideVerticalQty", label: "Side Vertical Bar Qty (V-S)", value: "" },
-  { key: "sideVerticalBottomClearance", label: "Side Vertical Bottom Clearance", value: "" },
-  { key: "sideVerticalTopClearance", label: "Side Vertical Top Clearance", value: "" },
-  { key: "sideVerticalUsedHeight", label: "Side Vertical Used Height Override (optional)", value: "" },
+  {
+    key: "sideVerticalBottomClearance",
+    label: "Side Vertical Bottom Clearance",
+    value: "",
+  },
+  {
+    key: "sideVerticalTopClearance",
+    label: "Side Vertical Top Clearance",
+    value: "",
+  },
+  {
+    key: "sideVerticalUsedHeight",
+    label: "Side Vertical Used Height Override (optional)",
+    value: "",
+  },
   { key: "endVerticalQty", label: "End Vertical Bar Qty (V-E)", value: "" },
-  { key: "endVerticalBottomClearance", label: "End Vertical Bottom Clearance", value: "" },
-  { key: "endVerticalTopClearance", label: "End Vertical Top Clearance", value: "" },
-  { key: "endVerticalUsedHeight", label: "End Vertical Used Height Override (optional)", value: "" },
-  { key: "baseShortVerticalQty", label: "Small 12 in Base Vertical Qty", value: "" },
-  { key: "baseShortVerticalCutLength", label: "Small Base Vertical Cut Length", value: "" },
+  {
+    key: "endVerticalBottomClearance",
+    label: "End Vertical Bottom Clearance",
+    value: "",
+  },
+  {
+    key: "endVerticalTopClearance",
+    label: "End Vertical Top Clearance",
+    value: "",
+  },
+  {
+    key: "endVerticalUsedHeight",
+    label: "End Vertical Used Height Override (optional)",
+    value: "",
+  },
+  {
+    key: "baseShortVerticalQty",
+    label: "Small 12 in Base Vertical Qty",
+    value: "",
+  },
+  {
+    key: "baseShortVerticalCutLength",
+    label: "Small Base Vertical Cut Length",
+    value: "",
+  },
   { key: "footingSize", label: "Footing Size", value: "" },
   { key: "ptSillPlates", label: "PT Sill Plates", value: "" },
   { key: "pierCount", label: "Pier Count", value: "" },
@@ -58,9 +131,9 @@ const initialFields: ExtractedField[] = [
 
 const fieldHelp: Record<string, string> = {
   sideWallLength: `Overall long foundation wall length. Example: 52'-0". Used for side horizontal rebar runs.`,
-  sideBaseOuterLength: `Outer footing/base rebar required length. For this ADU default formula: side wall + 3".`,
-  sideBaseMiddleLength: `Middle footing/base rebar required length. For this ADU default formula: side wall - 3".`,
-  sideBaseInnerLength: `Inner footing/base rebar required length. For this ADU default formula: side wall - 9".`,
+  sideBaseOuterLength: `Outer footing/base rebar required length. Formula: side wall + 3 in. Source should be Calc, not PDF.`,
+  sideBaseMiddleLength: `Middle footing/base rebar required length. Formula: side wall - 3 in. Source should be Calc, not PDF.`,
+  sideBaseInnerLength: `Inner footing/base rebar required length. Formula: side wall - 9 in. Source should be Calc, not PDF.`,
   endWallLength: `Foundation end-wall width. Example: 13'-4". Used for end wall horizontal rebar runs.`,
   sideAboveGrade: `Concrete stem wall height visible above finished grade on side walls.`,
   endAboveGrade: `Concrete stem wall height visible above finished grade on end walls.`,
@@ -70,15 +143,15 @@ const fieldHelp: Record<string, string> = {
   wallThickness: `Concrete stem wall thickness. Example: 6".`,
   footingDepth: `Footing depth used in vertical bar calculations. Example: 18".`,
   sideVerticalQty: `Total quantity of V-S vertical bars on both side walls. Verify against the plan.`,
-  sideVerticalBottomClearance: `Clearance from footing bottom to start of side vertical bar. Usually 3".`,
+  sideVerticalBottomClearance: `Clearance from footing bottom to start of side vertical bar. Commonly 3 in, but Live Mode requires PDF/user value.`,
   sideVerticalTopClearance: `Clearance from top of side wall to top of vertical bar. Used around vent/opening areas.`,
   sideVerticalUsedHeight: `Optional override. Leave blank for automatic calculation from total height minus top/bottom clearance.`,
   endVerticalQty: `Total quantity of V-E vertical bars on both end walls. Verify against the plan.`,
-  endVerticalBottomClearance: `Clearance from footing bottom to start of end vertical bar. Usually 3".`,
+  endVerticalBottomClearance: `Clearance from footing bottom to start of end vertical bar. Commonly 3 in, but Live Mode requires PDF/user value.`,
   endVerticalTopClearance: `Clearance from top of end wall to top of vertical bar.`,
   endVerticalUsedHeight: `Optional override. Leave blank for automatic calculation from total height minus top/bottom clearance.`,
   baseShortVerticalQty: `Quantity of small 12" base vertical pieces tying footing steel to the stem wall steel.`,
-  baseShortVerticalCutLength: `Cut length for each small base vertical piece. Current default is 12".`,
+  baseShortVerticalCutLength: `Cut length for each small base vertical piece. Live Mode requires PDF/user value.`,
   footingSize: `Footing size callout from plan. Example: 18" x 18".`,
   ptSillPlates: `Pressure-treated sill plates sitting on the concrete stem wall. Used when deriving concrete height from beam/grade dimensions.`,
   pierCount: `Total number of pier cages/support piers. Verify against plan marks.`,
@@ -97,28 +170,67 @@ const calculatedFieldKeys = new Set([
 
 function getInitialFieldSources(): Record<string, FieldSource> {
   return Object.fromEntries(
-    initialFields.map((field) => [field.key, { kind: "blank" as FieldSourceKind }])
+    initialFields.map((field) => [
+      field.key,
+      { kind: "blank" as FieldSourceKind },
+    ]),
   );
 }
 
 function getFieldSourceStyle(source: FieldSource) {
-  if (source.kind === "pdf") {
-    return { badge: "PDF", badgeClass: "bg-green-100 text-green-800 border-green-300", inputClass: "border-green-300 bg-green-50" };
+  if (source.kind === "pdf-text") {
+    return {
+      badge: "PDF Text",
+      badgeClass: "bg-green-100 text-green-800 border-green-300",
+      inputClass: "border-green-300 bg-green-50",
+    };
+  }
+  if (source.kind === "pdf-image") {
+    return {
+      badge: "PDF Image",
+      badgeClass: "bg-purple-100 text-purple-800 border-purple-300",
+      inputClass: "border-purple-300 bg-purple-50",
+    };
   }
   if (source.kind === "calculated") {
-    return { badge: "Calc", badgeClass: "bg-blue-100 text-blue-800 border-blue-300", inputClass: "border-blue-300 bg-blue-50" };
+    return {
+      badge: "Calc",
+      badgeClass: "bg-blue-100 text-blue-800 border-blue-300",
+      inputClass: "border-blue-300 bg-blue-50",
+    };
   }
   if (source.kind === "default") {
-    return { badge: "Verify", badgeClass: "bg-yellow-100 text-yellow-900 border-yellow-300", inputClass: "border-yellow-300 bg-yellow-50" };
+    return {
+      badge: "Sim",
+      badgeClass: "bg-yellow-100 text-yellow-900 border-yellow-300",
+      inputClass: "border-yellow-300 bg-yellow-50",
+    };
   }
   if (source.kind === "manual") {
-    return { badge: "Manual", badgeClass: "bg-gray-100 text-gray-800 border-gray-300", inputClass: "border-gray-400 bg-white" };
+    return {
+      badge: "User",
+      badgeClass: "bg-gray-100 text-gray-800 border-gray-300",
+      inputClass: "border-gray-400 bg-white",
+    };
   }
-  return { badge: "Blank", badgeClass: "bg-white text-gray-500 border-gray-300", inputClass: "border-gray-300 bg-white" };
+  if (source.kind === "missing") {
+    return {
+      badge: "Missing",
+      badgeClass: "bg-red-100 text-red-800 border-red-300",
+      inputClass: "border-red-300 bg-red-50",
+    };
+  }
+  return {
+    badge: "Blank",
+    badgeClass: "bg-white text-gray-500 border-gray-300",
+    inputClass: "border-gray-300 bg-white",
+  };
 }
 
 function makeTooltip(field: ExtractedField, source: FieldSource) {
-  const parts = [fieldHelp[field.key] || "Confirm this value before fabrication."];
+  const parts = [
+    fieldHelp[field.key] || "Confirm this value before fabrication.",
+  ];
   if (source.kind !== "blank") {
     parts.push(`Source: ${source.kind}`);
   }
@@ -141,20 +253,29 @@ export default function Home() {
   const [extractionStatus, setExtractionStatus] = useState("");
   const [extractionNotes, setExtractionNotes] = useState<string[]>([]);
   const [extractedTextPreview, setExtractedTextPreview] = useState("");
-  const [recognitionReport, setRecognitionReport] = useState<PlanRecognitionReport | null>(null);
+  const [recognitionReport, setRecognitionReport] =
+    useState<PlanRecognitionReport | null>(null);
+  const [visualAnalysis, setVisualAnalysis] = useState<VisualPlanAnalysis | null>(null);
+  const [visualAnalysisStatus, setVisualAnalysisStatus] = useState("");
   const [showDebugInfo, setShowDebugInfo] = useState(false);
+  const [extractionMode, setExtractionMode] = useState<ExtractionMode>("live");
   const [horizontalLap, setHorizontalLap] = useState("24");
   const [verticalBentLap, setVerticalBentLap] = useState("6");
   const [stickLength, setStickLength] = useState("20");
   const [fields, setFields] = useState<ExtractedField[]>(initialFields);
-  const [fieldSources, setFieldSources] = useState<Record<string, FieldSource>>(getInitialFieldSources());
+  const [fieldSources, setFieldSources] = useState<Record<string, FieldSource>>(
+    getInitialFieldSources(),
+  );
   const [schedule, setSchedule] = useState<ScheduleLine[]>([]);
   const [summary, setSummary] = useState<SummaryLine[]>([]);
-  const [materialTakeoff, setMaterialTakeoff] = useState<MaterialTakeoff | null>(null);
+  const [materialTakeoff, setMaterialTakeoff] =
+    useState<MaterialTakeoff | null>(null);
   const [selectedMark, setSelectedMark] = useState("");
   const [selectedPrefix, setSelectedPrefix] = useState("");
   const [filter, setFilter] = useState("ALL");
-  const [pierMode, setPierMode] = useState<"unknown" | "yes" | "none">("unknown");
+  const [pierMode, setPierMode] = useState<"unknown" | "yes" | "none">(
+    "unknown",
+  );
   const [pierDialogOpen, setPierDialogOpen] = useState(false);
   const [pierMessage, setPierMessage] = useState("");
 
@@ -175,22 +296,33 @@ export default function Home() {
     : selectedLine
       ? schedule.filter((line) => line.prefix === selectedLine.prefix)
       : [];
-  const filterOptions = Array.from(new Set(schedule.map((line) => line.prefix)));
+  const filterOptions = Array.from(
+    new Set(schedule.map((line) => line.prefix)),
+  );
 
   function getFieldValue(key: string) {
     return fields.find((field) => field.key === key)?.value || "";
   }
 
+  function markAllMissing(reason: string): Record<string, FieldSource> {
+    return Object.fromEntries(
+      initialFields.map((field) => [
+        field.key,
+        { kind: "missing" as FieldSourceKind, reason },
+      ]),
+    );
+  }
+
   function updateField(key: string, value: string) {
     setFields((current) =>
-      current.map((field) =>
-        field.key === key ? { ...field, value } : field
-      )
+      current.map((field) => (field.key === key ? { ...field, value } : field)),
     );
 
     setFieldSources((current) => ({
       ...current,
-      [key]: value.trim() ? { kind: "manual", reason: "Changed by user on screen." } : { kind: "blank" },
+      [key]: value.trim()
+        ? { kind: "manual", reason: "Changed by user on screen." }
+        : { kind: "blank" },
     }));
   }
 
@@ -210,7 +342,11 @@ export default function Home() {
     setExtractionNotes([]);
     setExtractedTextPreview("");
     setRecognitionReport(null);
+    setVisualAnalysis(null);
+    setVisualAnalysisStatus("");
     setShowDebugInfo(false);
+    setFields(initialFields);
+    setFields(initialFields);
     setFieldSources(getInitialFieldSources());
     setPierMode("unknown");
     setPierMessage("");
@@ -230,29 +366,38 @@ export default function Home() {
     setExtractionNotes([]);
     setExtractedTextPreview("");
     setRecognitionReport(null);
+    setVisualAnalysis(null);
+    setVisualAnalysisStatus("");
     setShowDebugInfo(false);
     setFieldSources(getInitialFieldSources());
     setPierMode("unknown");
     setPierMessage("");
   }
 
-  function applyDetectedValues(
-    values: { key: string; value: string; confidence?: "high" | "medium" | "low"; reason?: string }[]
-  ) {
+  function applyDetectedValues(values: DetectedValue[]) {
     setFields((current) =>
       current.map((field) => {
         const detected = values.find((value) => value.key === field.key);
-        return detected ? { ...field, value: detected.value } : field;
-      })
+        if (detected) return { ...field, value: detected.value };
+        return extractionMode === "live" ? { ...field, value: "" } : field;
+      }),
     );
 
-    setFieldSources((current) => {
-      const next = { ...current };
+    setFieldSources(() => {
+      const next: Record<string, FieldSource> = {};
+      for (const field of initialFields) {
+        next[field.key] =
+          extractionMode === "live"
+            ? {
+                kind: "missing",
+                reason:
+                  "Live Mode did not find this value. Enter it manually or add PDF image analysis.",
+              }
+            : { kind: "blank" };
+      }
       for (const item of values) {
-        const isCalculated = calculatedFieldKeys.has(item.key);
-        const isDefault = item.confidence === "low" && /default|confirm|assumption|calculated/i.test(item.reason || "");
         next[item.key] = {
-          kind: isCalculated ? "calculated" : isDefault ? "default" : "pdf",
+          kind: item.sourceKind,
           confidence: item.confidence,
           reason: item.reason,
         };
@@ -261,16 +406,87 @@ export default function Home() {
     });
   }
 
+  function confidenceFromNumber(value?: number): FieldSource["confidence"] {
+    if (value === undefined) return "low";
+    if (value >= 0.75) return "high";
+    if (value >= 0.5) return "medium";
+    return "low";
+  }
+
+  function applyVisualDetectedFields(analysis: VisualPlanAnalysis) {
+    const visualFields = analysis.extractedFields || [];
+    if (visualFields.length === 0) return;
+    setFields((current) =>
+      current.map((field) => {
+        const detected = visualFields.find((value) => value.key === field.key);
+        return detected ? { ...field, value: detected.value } : field;
+      }),
+    );
+    setFieldSources((current) => {
+      const next = { ...current };
+      for (const item of visualFields) {
+        if (!item.value?.trim()) continue;
+        next[item.key] = {
+          kind: item.source === "pdf-image" ? "pdf-image" : "pdf-text",
+          confidence: confidenceFromNumber(item.confidence),
+          reason: `${item.page ? `Page ${item.page}. ` : ""}${item.evidence || "Detected by PDF text + image analyzer."}${item.confidence !== undefined ? ` Confidence ${(item.confidence * 100).toFixed(0)}%.` : ""}`,
+        };
+      }
+      return next;
+    });
+  }
+
+  async function runSpatialPlanAnalysis(file: File) {
+    setVisualAnalysisStatus("Running PDF text + image analyzer...");
+    const formData = new FormData();
+    formData.append("blueprint", file);
+    const response = await fetch("/api/analyze-plan", { method: "POST", body: formData });
+    const analysis = (await response.json()) as VisualPlanAnalysis;
+    setVisualAnalysis(analysis);
+    if (!response.ok || !analysis.success) {
+      setVisualAnalysisStatus(`Visual analyzer failed: ${analysis.error || response.statusText}`);
+      return analysis;
+    }
+    applyVisualDetectedFields(analysis);
+    const circleCount = analysis.imageAnalysis?.reduce((total, page) => total + (page.circles?.length || 0), 0) || 0;
+    setVisualAnalysisStatus(`Visual analyzer completed. ${circleCount} circle candidates, ${analysis.extractedFields?.length || 0} field candidates.`);
+    return analysis;
+  }
+
   async function extractPlanData() {
     if (!planFile) {
-      setExtractionStatus("No file uploaded. Using sample values for now.");
-      fillSampleData();
+      if (extractionMode === "simulation") {
+        setExtractionStatus(
+          "No file uploaded. Simulation Mode loaded sample values.",
+        );
+        fillSampleData();
+      } else {
+        setExtractionStatus(
+          "No file uploaded. Live Mode will not load sample/canned values.",
+        );
+        setFieldSources(
+          markAllMissing("No PDF uploaded. Live Mode does not guess values."),
+        );
+      }
       return;
     }
 
     if (!planFile.type.includes("pdf")) {
-      setExtractionStatus("Image OCR is not connected yet. Using sample values for now.");
-      fillSampleData();
+      if (extractionMode === "simulation") {
+        setExtractionStatus(
+          "Image OCR is not connected yet. Simulation Mode loaded sample values.",
+        );
+        fillSampleData();
+      } else {
+        setExtractionStatus(
+          "Image OCR/PDF image analysis is not connected yet. Live Mode did not load fake data.",
+        );
+        setFieldSources(
+          markAllMissing(
+            "Image/PDF drawing analysis is not implemented yet. Enter this value manually.",
+          ),
+        );
+      }
       return;
     }
 
@@ -281,63 +497,179 @@ export default function Home() {
       const recognition = analyzePlanText(text);
       setRecognitionReport(recognition);
 
-      const result = extractDetectedValuesFromPlanText(recognition.preferredText || text);
+      const result = extractDetectedValuesFromPlanText(
+        recognition.preferredText || text,
+        { mode: extractionMode },
+      );
       applyDetectedValues(result.detectedValues);
+
+      let visualNotes: string[] = [];
+      try {
+        const visual = await runSpatialPlanAnalysis(planFile);
+        visualNotes = [
+          visual.sourcePolicy ? `Visual policy: ${visual.sourcePolicy}` : "",
+          visual.scale ? `Scale: ${visual.scale.status}${visual.scale.px_per_foot ? `, ${visual.scale.px_per_foot} px/ft` : ""}. ${visual.scale.evidence || ""}` : "",
+          ...(visual.notes || []),
+        ].filter(Boolean);
+      } catch (visualError) {
+        console.error(visualError);
+        setVisualAnalysisStatus("Visual analyzer failed. PDF text extraction was still applied.");
+      }
+
       setExtractionNotes([
         recognition.relevantPages.length
-          ? `Foundation page scoring: using page(s) ${recognition.relevantPages
-              .filter((page) => page.confidence === "high" || page.confidence === "medium")
-              .slice(0, 6)
-              .map((page) => page.pageNumber)
-              .join(", ") || "all pages"} first for extraction.`
+          ? `Foundation page scoring: using page(s) ${
+              recognition.relevantPages
+                .filter(
+                  (page) =>
+                    page.confidence === "high" || page.confidence === "medium",
+                )
+                .slice(0, 6)
+                .map((page) => page.pageNumber)
+                .join(", ") || "all pages"
+            } first for extraction.`
           : "Foundation page scoring: no strong page match; using all PDF text.",
         ...result.notes,
+        ...visualNotes,
         ...result.detectedValues.map(
-          (item) => `${item.key}: ${item.value} (${item.confidence}) - ${item.reason}`
+          (item) =>
+            `${item.key}: ${item.value} (${item.confidence}) - ${item.reason}`,
         ),
       ]);
       setExtractionStatus(
-        `PDF text extracted. ${result.detectedValues.length} values were filled. Please confirm every value before generating.`
+        extractionMode === "live"
+          ? `Live Mode extraction completed. PDF text filled ${result.detectedValues.length} values; visual analyzer may have added PDF Image values. Missing values were not guessed.`
+          : `Simulation Mode extraction completed. PDF text/defaults filled ${result.detectedValues.length} values; defaults are marked Sim.`,
       );
     } catch (error) {
       console.error(error);
-      setExtractionStatus("Could not read PDF text. Using sample values for now.");
-      fillSampleData();
+      if (extractionMode === "simulation") {
+        setExtractionStatus(
+          "Could not read PDF text. Simulation Mode loaded sample values.",
+        );
+        fillSampleData();
+      } else {
+        setExtractionStatus(
+          "Could not read PDF text. Live Mode did not load fake data.",
+        );
+        setFieldSources(
+          markAllMissing(
+            "PDF text extraction failed. Live Mode does not guess values.",
+          ),
+        );
+      }
     }
   }
 
   function fillSampleData() {
     setFields([
       { key: "sideWallLength", label: "Side Wall Length", value: "52'" },
-      { key: "sideBaseOuterLength", label: "Side Base Outer Required Len (O = side + 3 in)", value: "52'-3\"" },
-      { key: "sideBaseMiddleLength", label: "Side Base Middle Required Len (M = side - 3 in)", value: "51'-9\"" },
-      { key: "sideBaseInnerLength", label: "Side Base Inner Required Len (I = side - 9 in)", value: "51'-3\"" },
+      {
+        key: "sideBaseOuterLength",
+        label: "Side Base Outer Required Len (O = side + 3 in)",
+        value: "52'-3\"",
+      },
+      {
+        key: "sideBaseMiddleLength",
+        label: "Side Base Middle Required Len (M = side - 3 in)",
+        value: "51'-9\"",
+      },
+      {
+        key: "sideBaseInnerLength",
+        label: "Side Base Inner Required Len (I = side - 9 in)",
+        value: "51'-3\"",
+      },
       { key: "endWallLength", label: "End Wall Length", value: "13'-4\"" },
-      { key: "sideAboveGrade", label: "Side Wall Above Grade Height", value: "19\"" },
-      { key: "endAboveGrade", label: "End Wall Above Grade Height", value: "12.5\"" },
-      { key: "belowGradeEmbed", label: "Below Grade Stem Wall Embed", value: "6\"" },
-      { key: "sideTotalHeight", label: "Side Wall Total Concrete Height", value: "25\"" },
-      { key: "endTotalHeight", label: "End Wall Total Concrete Height", value: "18.5\"" },
-      { key: "wallThickness", label: "Wall Thickness", value: "6\"" },
-      { key: "footingDepth", label: "Footing Depth for Vertical Bars", value: "18\"" },
-      { key: "sideVerticalQty", label: "Side Vertical Bar Qty (V-S)", value: "52" },
-      { key: "sideVerticalBottomClearance", label: "Side Vertical Bottom Clearance", value: "3\"" },
-      { key: "sideVerticalTopClearance", label: "Side Vertical Top Clearance", value: "8\"" },
-      { key: "sideVerticalUsedHeight", label: "Side Vertical Used Height Override (optional)", value: "" },
-      { key: "endVerticalQty", label: "End Vertical Bar Qty (V-E)", value: "16" },
-      { key: "endVerticalBottomClearance", label: "End Vertical Bottom Clearance", value: "3\"" },
-      { key: "endVerticalTopClearance", label: "End Vertical Top Clearance", value: "3\"" },
-      { key: "endVerticalUsedHeight", label: "End Vertical Used Height Override (optional)", value: "" },
-      { key: "baseShortVerticalQty", label: "Small 12 in Base Vertical Qty", value: "24" },
-      { key: "baseShortVerticalCutLength", label: "Small Base Vertical Cut Length", value: "12\"" },
-      { key: "footingSize", label: "Footing Size", value: "18\" x 18\"" },
+      {
+        key: "sideAboveGrade",
+        label: "Side Wall Above Grade Height",
+        value: '19"',
+      },
+      {
+        key: "endAboveGrade",
+        label: "End Wall Above Grade Height",
+        value: '12.5"',
+      },
+      {
+        key: "belowGradeEmbed",
+        label: "Below Grade Stem Wall Embed",
+        value: '6"',
+      },
+      {
+        key: "sideTotalHeight",
+        label: "Side Wall Total Concrete Height",
+        value: '25"',
+      },
+      {
+        key: "endTotalHeight",
+        label: "End Wall Total Concrete Height",
+        value: '18.5"',
+      },
+      { key: "wallThickness", label: "Wall Thickness", value: '6"' },
+      {
+        key: "footingDepth",
+        label: "Footing Depth for Vertical Bars",
+        value: '18"',
+      },
+      {
+        key: "sideVerticalQty",
+        label: "Side Vertical Bar Qty (V-S)",
+        value: "52",
+      },
+      {
+        key: "sideVerticalBottomClearance",
+        label: "Side Vertical Bottom Clearance",
+        value: '3"',
+      },
+      {
+        key: "sideVerticalTopClearance",
+        label: "Side Vertical Top Clearance",
+        value: '8"',
+      },
+      {
+        key: "sideVerticalUsedHeight",
+        label: "Side Vertical Used Height Override (optional)",
+        value: "",
+      },
+      {
+        key: "endVerticalQty",
+        label: "End Vertical Bar Qty (V-E)",
+        value: "16",
+      },
+      {
+        key: "endVerticalBottomClearance",
+        label: "End Vertical Bottom Clearance",
+        value: '3"',
+      },
+      {
+        key: "endVerticalTopClearance",
+        label: "End Vertical Top Clearance",
+        value: '3"',
+      },
+      {
+        key: "endVerticalUsedHeight",
+        label: "End Vertical Used Height Override (optional)",
+        value: "",
+      },
+      {
+        key: "baseShortVerticalQty",
+        label: "Small 12 in Base Vertical Qty",
+        value: "24",
+      },
+      {
+        key: "baseShortVerticalCutLength",
+        label: "Small Base Vertical Cut Length",
+        value: '12"',
+      },
+      { key: "footingSize", label: "Footing Size", value: '18" x 18"' },
       {
         key: "ptSillPlates",
         label: "PT Sill Plates",
-        value: "1 plate @ 1.5\" for end wall; 2 plates @ 1.5\" each for side wall",
+        value:
+          '1 plate @ 1.5" for end wall; 2 plates @ 1.5" each for side wall',
       },
       { key: "pierCount", label: "Pier Count", value: "14" },
-      { key: "pierDiameter", label: "Pier Diameter", value: "28\"" },
+      { key: "pierDiameter", label: "Pier Diameter", value: '28"' },
       { key: "pierHeight", label: "Pier Height / Cage Height", value: "" },
       {
         key: "rebarCallouts",
@@ -345,8 +677,28 @@ export default function Home() {
         value: "#4 horizontal, V-E, V-S, pier cages",
       },
     ]);
+    setFieldSources((current) => {
+      const next = { ...current };
+      for (const field of initialFields) {
+        const hasValue =
+          field.key !== "pierHeight" &&
+          field.key !== "sideVerticalUsedHeight" &&
+          field.key !== "endVerticalUsedHeight";
+        next[field.key] = hasValue
+          ? {
+              kind: "default",
+              confidence: "low",
+              reason:
+                "Simulation Mode sample/default value. Not read from PDF.",
+            }
+          : { kind: "blank" };
+      }
+      return next;
+    });
     setPierMode("unknown");
-    setPierMessage("Pier details were loaded from defaults/PDF. Please confirm them before generating.");
+    setPierMessage(
+      "Simulation Mode loaded defaults. Live Mode never uses these values unless you enter them manually.",
+    );
   }
 
   function savePierDetails(mode: "yes" | "none") {
@@ -364,19 +716,75 @@ export default function Home() {
     const diameter = getFieldValue("pierDiameter").trim();
     const height = getFieldValue("pierHeight").trim();
     if (!count || count <= 0 || !diameter || !height) {
-      setPierMessage("Enter pier count, pier diameter, and pier height/cage height, or choose I do not have piers.");
+      setPierMessage(
+        "Enter pier count, pier diameter, and pier height/cage height, or choose I do not have piers.",
+      );
       return;
     }
 
     setPierMode("yes");
-    setPierMessage(`Pier details confirmed: ${count} piers, diameter ${diameter}, height ${height}.`);
+    setPierMessage(
+      `Pier details confirmed: ${count} piers, diameter ${diameter}, height ${height}.`,
+    );
     setPierDialogOpen(false);
   }
 
+  function getBlockingLiveModeMissingFields() {
+    if (extractionMode !== "live") return [];
+
+    const requiredKeys = [
+      "sideWallLength",
+      "sideBaseOuterLength",
+      "sideBaseMiddleLength",
+      "sideBaseInnerLength",
+      "endWallLength",
+      "sideTotalHeight",
+      "endTotalHeight",
+      "footingDepth",
+      "sideVerticalQty",
+      "sideVerticalBottomClearance",
+      "sideVerticalTopClearance",
+      "endVerticalQty",
+      "endVerticalBottomClearance",
+      "endVerticalTopClearance",
+      "baseShortVerticalQty",
+      "baseShortVerticalCutLength",
+    ];
+
+    return requiredKeys.filter((key) => {
+      const field = fields.find((item) => item.key === key);
+      const source = fieldSources[key];
+      return (
+        !field?.value.trim() ||
+        !source ||
+        source.kind === "missing" ||
+        source.kind === "default" ||
+        source.kind === "blank"
+      );
+    });
+  }
+
   function generateSchedule() {
+    const blockingMissingKeys = getBlockingLiveModeMissingFields();
+    if (blockingMissingKeys.length > 0) {
+      const labels = blockingMissingKeys
+        .map(
+          (key) =>
+            initialFields.find((field) => field.key === key)?.label || key,
+        )
+        .slice(0, 8)
+        .join(", ");
+      setExtractionStatus(
+        `Live Mode blocked schedule generation. Missing/Sim values must be entered or extracted first: ${labels}${blockingMissingKeys.length > 8 ? "..." : ""}`,
+      );
+      return;
+    }
+
     if (pierMode === "unknown") {
       setPierDialogOpen(true);
-      setPierMessage("Confirm pier details before generating, or choose I do not have piers.");
+      setPierMessage(
+        "Confirm pier details before generating, or choose I do not have piers.",
+      );
       return;
     }
     const result = generateRebarSchedule({
@@ -441,7 +849,9 @@ export default function Home() {
     ]);
 
     const csv = [header, ...rows]
-      .map((row) => row.map((cell) => `"${String(cell).replaceAll('"', '""')}"`).join(","))
+      .map((row) =>
+        row.map((cell) => `"${String(cell).replaceAll('"', '""')}"`).join(","),
+      )
       .join("\n");
 
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
@@ -465,7 +875,6 @@ export default function Home() {
     setSelectedPrefix(line.prefix);
   }
 
-
   const isPdf = planFileType.includes("pdf");
   const isImage = planFileType.startsWith("image/");
 
@@ -477,7 +886,8 @@ export default function Home() {
             <div className="w-full max-w-xl rounded-lg bg-white p-6 shadow-xl">
               <h2 className="text-2xl font-bold">Enter Pier Details</h2>
               <p className="mt-2 text-sm text-gray-600">
-                Confirm this before calculation. The app will not guess the final pier count from OCR/image detection.
+                Confirm this before calculation. The app will not guess the
+                final pier count from OCR/image detection.
               </p>
 
               <div className="mt-4 grid gap-4">
@@ -485,30 +895,41 @@ export default function Home() {
                   <span className="mb-1 block font-semibold">Pier Count</span>
                   <input
                     value={getFieldValue("pierCount")}
-                    onChange={(event) => updateField("pierCount", event.target.value)}
+                    onChange={(event) =>
+                      updateField("pierCount", event.target.value)
+                    }
                     placeholder="Example: 14"
                     className="w-full rounded border p-2"
                   />
                 </label>
                 <label className="block">
-                  <span className="mb-1 block font-semibold">Pier Diameter</span>
+                  <span className="mb-1 block font-semibold">
+                    Pier Diameter
+                  </span>
                   <input
                     value={getFieldValue("pierDiameter")}
-                    onChange={(event) => updateField("pierDiameter", event.target.value)}
+                    onChange={(event) =>
+                      updateField("pierDiameter", event.target.value)
+                    }
                     placeholder={'Example: 28"'}
                     className="w-full rounded border p-2"
                   />
                 </label>
                 <label className="block">
-                  <span className="mb-1 block font-semibold">Pier Height / Cage Height</span>
+                  <span className="mb-1 block font-semibold">
+                    Pier Height / Cage Height
+                  </span>
                   <input
                     value={getFieldValue("pierHeight")}
-                    onChange={(event) => updateField("pierHeight", event.target.value)}
+                    onChange={(event) =>
+                      updateField("pierHeight", event.target.value)
+                    }
                     placeholder={`Example: 30" or 2'-6"`}
                     className="w-full rounded border p-2"
                   />
                   <span className="mt-1 block text-xs text-gray-500">
-                    Enter the pier concrete height or the rebar cage height you want the schedule to reference.
+                    Enter the pier concrete height or the rebar cage height you
+                    want the schedule to reference.
                   </span>
                 </label>
               </div>
@@ -565,6 +986,46 @@ export default function Home() {
                   onChange={(e) => setProjectName(e.target.value)}
                   className="w-full rounded border p-2"
                 />
+              </div>
+
+              <div className="rounded border border-gray-200 bg-gray-50 p-3">
+                <div className="mb-2 font-semibold">Extraction Mode</div>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <label
+                    className={`flex cursor-pointer items-start gap-2 rounded border p-3 ${extractionMode === "live" ? "border-red-300 bg-red-50" : "bg-white"}`}
+                  >
+                    <input
+                      type="radio"
+                      name="extractionMode"
+                      checked={extractionMode === "live"}
+                      onChange={() => setExtractionMode("live")}
+                    />
+                    <span>
+                      <strong>Live Mode</strong>
+                      <span className="block text-xs text-gray-600">
+                        Only PDF text, PDF image analysis, user input, and
+                        traced calculations. Missing stays Missing.
+                      </span>
+                    </span>
+                  </label>
+                  <label
+                    className={`flex cursor-pointer items-start gap-2 rounded border p-3 ${extractionMode === "simulation" ? "border-yellow-300 bg-yellow-50" : "bg-white"}`}
+                  >
+                    <input
+                      type="radio"
+                      name="extractionMode"
+                      checked={extractionMode === "simulation"}
+                      onChange={() => setExtractionMode("simulation")}
+                    />
+                    <span>
+                      <strong>Simulation Mode</strong>
+                      <span className="block text-xs text-gray-600">
+                        Allows current demo/default values. They are marked Sim,
+                        never PDF.
+                      </span>
+                    </span>
+                  </label>
+                </div>
               </div>
 
               <div>
@@ -647,9 +1108,10 @@ export default function Home() {
                 onClick={extractPlanData}
                 className="rounded bg-blue-600 p-3 font-semibold text-white hover:bg-blue-700"
               >
-                Extract Plan Data
+                {extractionMode === "live"
+                  ? "Extract Plan Data - Live"
+                  : "Extract Plan Data - Simulation"}
               </button>
-
             </div>
           </section>
 
@@ -681,7 +1143,11 @@ export default function Home() {
               </div>
             )}
 
-            {(extractionNotes.length > 0 || recognitionReport || extractedTextPreview) && (
+            {(extractionNotes.length > 0 ||
+              recognitionReport ||
+              visualAnalysis ||
+              visualAnalysisStatus ||
+              extractedTextPreview) && (
               <label className="mt-4 flex items-center gap-2 rounded border bg-gray-50 p-3 text-sm font-semibold text-gray-700">
                 <input
                   type="checkbox"
@@ -690,6 +1156,12 @@ export default function Home() {
                 />
                 Show PDF extraction / developer debug info
               </label>
+            )}
+
+            {visualAnalysisStatus && (
+              <div className="mt-4 rounded border border-purple-300 bg-purple-50 p-3 text-sm text-purple-900">
+                <strong>PDF Image Analyzer:</strong> {visualAnalysisStatus}
+              </div>
             )}
 
             {showDebugInfo && extractionNotes.length > 0 && (
@@ -705,92 +1177,142 @@ export default function Home() {
 
             {showDebugInfo && recognitionReport && (
               <div className="mt-4 rounded border bg-white p-3 text-sm">
-                <h3 className="mb-2 font-semibold">Plan Recognition Workbench</h3>
+                <h3 className="mb-2 font-semibold">
+                  Plan Recognition Workbench
+                </h3>
                 <div className="mb-3 grid gap-2 md:grid-cols-3">
                   <div className="rounded border p-2">
-                    <strong>Pages read</strong><br />
+                    <strong>Pages read</strong>
+                    <br />
                     {recognitionReport.pages.length}
                   </div>
                   <div className="rounded border p-2">
-                    <strong>Unique dimensions</strong><br />
+                    <strong>Unique dimensions</strong>
+                    <br />
                     {recognitionReport.dimensions.length}
                   </div>
                   <div className="rounded border p-2">
-                    <strong>Keyword hits</strong><br />
+                    <strong>Keyword hits</strong>
+                    <br />
                     {recognitionReport.keywordSnippets.length}
                   </div>
                 </div>
 
                 <details className="mb-3 rounded border p-2" open>
-                  <summary className="cursor-pointer font-semibold">Relevant foundation pages</summary>
+                  <summary className="cursor-pointer font-semibold">
+                    Relevant foundation pages
+                  </summary>
                   <div className="mt-2 max-h-72 overflow-auto">
                     {recognitionReport.relevantPages.length === 0 ? (
                       <div className="rounded bg-yellow-50 p-2 text-yellow-900">
-                        No strong foundation page found. The extractor is using all PDF text.
+                        No strong foundation page found. The extractor is using
+                        all PDF text.
                       </div>
                     ) : (
-                      recognitionReport.relevantPages.slice(0, 10).map((page) => {
-                        const badgeClass =
-                          page.confidence === "high"
-                            ? "border-green-300 bg-green-50 text-green-800"
-                            : page.confidence === "medium"
-                              ? "border-yellow-300 bg-yellow-50 text-yellow-900"
-                              : "border-gray-300 bg-gray-50 text-gray-700";
+                      recognitionReport.relevantPages
+                        .slice(0, 10)
+                        .map((page) => {
+                          const badgeClass =
+                            page.confidence === "high"
+                              ? "border-green-300 bg-green-50 text-green-800"
+                              : page.confidence === "medium"
+                                ? "border-yellow-300 bg-yellow-50 text-yellow-900"
+                                : "border-gray-300 bg-gray-50 text-gray-700";
 
-                        return (
-                          <div key={page.pageNumber} className="mb-2 rounded border bg-gray-50 p-2">
-                            <div className="mb-1 flex flex-wrap items-center gap-2">
-                              <strong>Page {page.pageNumber}</strong>
-                              <span className={`rounded border px-2 py-0.5 text-xs font-bold uppercase ${badgeClass}`}>
-                                {page.confidence}
-                              </span>
-                              <span className="text-xs text-gray-600">Score: {page.score}</span>
-                              <span className="text-xs text-gray-600">Dims: {page.dimensionCount}</span>
+                          return (
+                            <div
+                              key={page.pageNumber}
+                              className="mb-2 rounded border bg-gray-50 p-2"
+                            >
+                              <div className="mb-1 flex flex-wrap items-center gap-2">
+                                <strong>Page {page.pageNumber}</strong>
+                                <span
+                                  className={`rounded border px-2 py-0.5 text-xs font-bold uppercase ${badgeClass}`}
+                                >
+                                  {page.confidence}
+                                </span>
+                                <span className="text-xs text-gray-600">
+                                  Score: {page.score}
+                                </span>
+                                <span className="text-xs text-gray-600">
+                                  Dims: {page.dimensionCount}
+                                </span>
+                              </div>
+                              <div className="text-xs text-gray-700">
+                                {page.reason}
+                              </div>
+                              <div className="mt-1 font-mono text-xs text-gray-600">
+                                {page.preview}
+                              </div>
                             </div>
-                            <div className="text-xs text-gray-700">{page.reason}</div>
-                            <div className="mt-1 font-mono text-xs text-gray-600">{page.preview}</div>
-                          </div>
-                        );
-                      })
+                          );
+                        })
                     )}
                   </div>
                 </details>
 
                 <details className="mb-3 rounded border p-2" open>
-                  <summary className="cursor-pointer font-semibold">Likely foundation dimensions</summary>
+                  <summary className="cursor-pointer font-semibold">
+                    Likely foundation dimensions
+                  </summary>
                   <div className="mt-2 flex flex-wrap gap-2">
-                    {recognitionReport.dimensions.slice(0, 35).map((dimension) => (
-                      <span
-                        key={dimension.value}
-                        title={`Found on page(s): ${dimension.pages.join(", ")}`}
-                        className="rounded border bg-gray-50 px-2 py-1 font-mono text-xs"
-                      >
-                        {dimension.value} × {dimension.count}
-                      </span>
-                    ))}
+                    {recognitionReport.dimensions
+                      .slice(0, 35)
+                      .map((dimension) => (
+                        <span
+                          key={dimension.value}
+                          title={`Found on page(s): ${dimension.pages.join(", ")}`}
+                          className="rounded border bg-gray-50 px-2 py-1 font-mono text-xs"
+                        >
+                          {dimension.value} × {dimension.count}
+                        </span>
+                      ))}
                   </div>
                 </details>
 
                 <details className="mb-3 rounded border p-2">
-                  <summary className="cursor-pointer font-semibold">Important keyword snippets</summary>
+                  <summary className="cursor-pointer font-semibold">
+                    Important keyword snippets
+                  </summary>
                   <div className="mt-2 max-h-72 overflow-auto">
-                    {recognitionReport.keywordSnippets.slice(0, 30).map((hit, index) => (
-                      <div key={`${hit.keyword}-${hit.pageNumber}-${index}`} className="mb-2 rounded bg-gray-50 p-2">
-                        <div className="font-semibold">Page {hit.pageNumber} · {hit.keyword}</div>
-                        <div className="font-mono text-xs text-gray-700">{hit.snippet}</div>
-                      </div>
-                    ))}
+                    {recognitionReport.keywordSnippets
+                      .slice(0, 30)
+                      .map((hit, index) => (
+                        <div
+                          key={`${hit.keyword}-${hit.pageNumber}-${index}`}
+                          className="mb-2 rounded bg-gray-50 p-2"
+                        >
+                          <div className="font-semibold">
+                            Page {hit.pageNumber} · {hit.keyword}
+                          </div>
+                          <div className="font-mono text-xs text-gray-700">
+                            {hit.snippet}
+                          </div>
+                        </div>
+                      ))}
                   </div>
                 </details>
 
                 <details className="rounded border p-2">
-                  <summary className="cursor-pointer font-semibold">Page-by-page scan</summary>
+                  <summary className="cursor-pointer font-semibold">
+                    Page-by-page scan
+                  </summary>
                   <div className="mt-2 max-h-72 overflow-auto">
                     {recognitionReport.pages.map((page) => (
-                      <div key={page.pageNumber} className="mb-2 rounded bg-gray-50 p-2">
-                        <div className="font-semibold">Page {page.pageNumber}</div>
-                        <div>Dimensions: {page.dimensionCount} · Keywords: {page.keywordHits.join(", ") || "none"}</div>
-                        <div className="mt-1 font-mono text-xs text-gray-600">{page.preview}</div>
+                      <div
+                        key={page.pageNumber}
+                        className="mb-2 rounded bg-gray-50 p-2"
+                      >
+                        <div className="font-semibold">
+                          Page {page.pageNumber}
+                        </div>
+                        <div>
+                          Dimensions: {page.dimensionCount} · Keywords:{" "}
+                          {page.keywordHits.join(", ") || "none"}
+                        </div>
+                        <div className="mt-1 font-mono text-xs text-gray-600">
+                          {page.preview}
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -798,9 +1320,47 @@ export default function Home() {
               </div>
             )}
 
+            {showDebugInfo && visualAnalysis && (
+              <div className="mt-4 rounded border bg-white p-3 text-sm">
+                <h3 className="mb-2 font-semibold">PDF Text + Visual Analyzer</h3>
+                <div className="mb-3 grid gap-2 md:grid-cols-4">
+                  <div className="rounded border p-2"><strong>Engine</strong><br />{visualAnalysis.engine || "unknown"}</div>
+                  <div className="rounded border p-2"><strong>Scale</strong><br />{visualAnalysis.scale?.px_per_foot ? `${visualAnalysis.scale.px_per_foot} px/ft` : visualAnalysis.scale?.status || "missing"}</div>
+                  <div className="rounded border p-2"><strong>Text dimensions</strong><br />{visualAnalysis.textEvidence?.dimensions?.length || 0}</div>
+                  <div className="rounded border p-2"><strong>Image pages</strong><br />{visualAnalysis.imageAnalysis?.length || 0}</div>
+                </div>
+                {visualAnalysis.scale?.evidence && (
+                  <div className="mb-3 rounded border border-yellow-300 bg-yellow-50 p-2 text-yellow-900"><strong>Scale evidence:</strong> {visualAnalysis.scale.evidence}</div>
+                )}
+                <details className="mb-3 rounded border p-2" open>
+                  <summary className="cursor-pointer font-semibold">Extracted field candidates</summary>
+                  <div className="mt-2 max-h-72 overflow-auto">
+                    {(visualAnalysis.extractedFields || []).length === 0 ? (
+                      <div className="rounded bg-red-50 p-2 text-red-800">No field candidates found by visual/text analyzer.</div>
+                    ) : (
+                      <table className="w-full border-collapse text-xs">
+                        <thead className="bg-gray-100"><tr><th className="border-b p-2 text-left">Field</th><th className="border-b p-2 text-left">Value</th><th className="border-b p-2 text-left">Source</th><th className="border-b p-2 text-left">Evidence</th></tr></thead>
+                        <tbody>{(visualAnalysis.extractedFields || []).map((item, index) => (
+                          <tr key={`${item.key}-${index}`}><td className="border-b p-2 font-mono">{item.key}</td><td className="border-b p-2 font-bold">{item.value}</td><td className="border-b p-2">{item.source}</td><td className="border-b p-2">{item.page ? `Page ${item.page}. ` : ""}{item.evidence || ""}</td></tr>
+                        ))}</tbody>
+                      </table>
+                    )}
+                  </div>
+                </details>
+                <details className="mb-3 rounded border p-2">
+                  <summary className="cursor-pointer font-semibold">Circle / symbol candidates</summary>
+                  <div className="mt-2 max-h-72 overflow-auto">{(visualAnalysis.imageAnalysis || []).map((page) => (
+                    <div key={page.page} className="mb-2 rounded bg-gray-50 p-2"><div className="font-semibold">Page {page.page}</div>{page.error ? <div className="text-red-700">{page.error}</div> : <div className="text-xs">Circles: {page.circles?.length || 0} · Lines: {page.lines?.length || 0}<div className="mt-1 flex flex-wrap gap-1">{(page.circles || []).slice(0, 60).map((circle, index) => (<span key={`${page.page}-${circle.x}-${circle.y}-${index}`} title={circle.evidence} className="rounded border bg-white px-2 py-1 font-mono">{circle.classification} ({circle.x},{circle.y}) r{circle.r}</span>))}</div></div>}</div>
+                  ))}</div>
+                </details>
+              </div>
+            )}
+
             {showDebugInfo && extractedTextPreview && (
               <details className="mt-4 rounded border bg-white p-3 text-sm">
-                <summary className="cursor-pointer font-semibold">Show first PDF text extracted</summary>
+                <summary className="cursor-pointer font-semibold">
+                  Show first PDF text extracted
+                </summary>
                 <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap rounded bg-gray-100 p-3 text-xs">
                   {extractedTextPreview}
                 </pre>
@@ -814,89 +1374,129 @@ export default function Home() {
             Confirm Detected Values
           </h2>
 
-          <div className="mb-4 grid gap-2 text-xs md:grid-cols-4">
-              <div className="rounded border border-green-300 bg-green-50 p-2 text-green-800"><strong>PDF</strong> = read from PDF text</div>
-              <div className="rounded border border-blue-300 bg-blue-50 p-2 text-blue-800"><strong>Calc</strong> = calculated by formula</div>
-              <div className="rounded border border-yellow-300 bg-yellow-50 p-2 text-yellow-900"><strong>Verify</strong> = default/assumption</div>
-              <div className="rounded border border-gray-300 bg-gray-50 p-2 text-gray-800"><strong>Manual</strong> = changed by user</div>
+          <div className="mb-4 grid gap-2 text-xs md:grid-cols-6">
+            <div className="rounded border border-green-300 bg-green-50 p-2 text-green-800">
+              <strong>PDF Text</strong> = directly read from PDF text
             </div>
+            <div className="rounded border border-purple-300 bg-purple-50 p-2 text-purple-800">
+              <strong>PDF Image</strong> = from drawing/symbol analysis
+            </div>
+            <div className="rounded border border-blue-300 bg-blue-50 p-2 text-blue-800">
+              <strong>Calc</strong> = calculated from traced inputs
+            </div>
+            <div className="rounded border border-gray-300 bg-gray-50 p-2 text-gray-800">
+              <strong>User</strong> = entered/edited by user
+            </div>
+            <div className="rounded border border-yellow-300 bg-yellow-50 p-2 text-yellow-900">
+              <strong>Sim</strong> = Simulation Mode default only
+            </div>
+            <div className="rounded border border-red-300 bg-red-50 p-2 text-red-800">
+              <strong>Missing</strong> = not found; no fake data
+            </div>
+          </div>
 
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-              {fields.map((field) => {
-                const source = fieldSources[field.key] || { kind: "blank" as FieldSourceKind };
-                const sourceStyle = getFieldSourceStyle(source);
-                const tooltip = makeTooltip(field, source);
+            {fields.map((field) => {
+              const source = fieldSources[field.key] || {
+                kind: "blank" as FieldSourceKind,
+              };
+              const sourceStyle = getFieldSourceStyle(source);
+              const tooltip = makeTooltip(field, source);
 
-                return (
-                  <div key={field.key}>
-                    <label className="mb-1 flex items-center gap-2 font-semibold">
-                      <span>{field.label}</span>
-                      <span
-                        title={tooltip}
-                        className={`inline-flex h-5 w-5 cursor-help items-center justify-center rounded-full border text-xs ${sourceStyle.badgeClass}`}
-                      >
-                        i
-                      </span>
-                      <span
-                        title={tooltip}
-                        className={`rounded border px-2 py-0.5 text-[10px] font-bold uppercase ${sourceStyle.badgeClass}`}
-                      >
-                        {sourceStyle.badge}
-                      </span>
-                    </label>
-                    <input
-                      value={field.value}
-                      onChange={(e) => updateField(field.key, e.target.value)}
-                      placeholder="Enter or confirm value"
+              return (
+                <div key={field.key}>
+                  <label className="mb-1 flex items-center gap-2 font-semibold">
+                    <span>{field.label}</span>
+                    <span
                       title={tooltip}
-                      className={`w-full rounded border p-2 ${sourceStyle.inputClass}`}
-                    />
-                  </div>
-                );
-              })}
-            </div>
-
-            <div className="mt-5 rounded border border-purple-300 bg-purple-50 p-3 text-sm text-purple-900">
-              <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                <div>
-                  <strong>Pier Details</strong>
-                  <div className="text-xs">
-                    {pierMode === "unknown"
-                      ? "Not confirmed yet. Required before generating."
-                      : pierMode === "yes"
-                        ? `Confirmed: ${getFieldValue("pierCount") || "?"} piers, ${getFieldValue("pierDiameter") || "diameter ?"}, height ${getFieldValue("pierHeight") || "?"}`
-                        : "No piers selected."}
-                  </div>
+                      className={`inline-flex h-5 w-5 cursor-help items-center justify-center rounded-full border text-xs ${sourceStyle.badgeClass}`}
+                    >
+                      i
+                    </span>
+                    <span
+                      title={tooltip}
+                      className={`rounded border px-2 py-0.5 text-[10px] font-bold uppercase ${sourceStyle.badgeClass}`}
+                    >
+                      {sourceStyle.badge}
+                    </span>
+                  </label>
+                  <input
+                    value={field.value}
+                    onChange={(e) => updateField(field.key, e.target.value)}
+                    placeholder="Enter or confirm value"
+                    title={tooltip}
+                    className={`w-full rounded border p-2 ${sourceStyle.inputClass}`}
+                  />
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setPierDialogOpen(true)}
-                  className="rounded bg-purple-700 px-3 py-2 font-semibold text-white hover:bg-purple-800"
-                >
-                  Enter Pier Details
-                </button>
-              </div>
-              {pierMessage && <div className="text-xs">{pierMessage}</div>}
-            </div>
+              );
+            })}
+          </div>
 
-            <button
-              type="button"
-              onClick={generateSchedule}
-              className="mt-5 w-full rounded bg-gray-900 p-3 font-semibold text-white hover:bg-gray-800"
-            >
-              Generate Rebar Schedule
-            </button>
+          <div className="mt-5 rounded border border-purple-300 bg-purple-50 p-3 text-sm text-purple-900">
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <strong>Pier Details</strong>
+                <div className="text-xs">
+                  {pierMode === "unknown"
+                    ? "Not confirmed yet. Required before generating."
+                    : pierMode === "yes"
+                      ? `Confirmed: ${getFieldValue("pierCount") || "?"} piers, ${getFieldValue("pierDiameter") || "diameter ?"}, height ${getFieldValue("pierHeight") || "?"}`
+                      : "No piers selected."}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPierDialogOpen(true)}
+                className="rounded bg-purple-700 px-3 py-2 font-semibold text-white hover:bg-purple-800"
+              >
+                Enter Pier Details
+              </button>
+            </div>
+            {pierMessage && <div className="text-xs">{pierMessage}</div>}
+          </div>
+
+          <button
+            type="button"
+            onClick={generateSchedule}
+            className="mt-5 w-full rounded bg-gray-900 p-3 font-semibold text-white hover:bg-gray-800"
+          >
+            Generate Rebar Schedule
+          </button>
         </section>
 
         <section className="mt-6 rounded-lg bg-white p-6 shadow">
           <h2 className="mb-4 text-2xl font-semibold">Piece Naming Legend</h2>
           <div className="grid gap-3 text-sm md:grid-cols-3">
-            <div className="rounded border p-3"><strong>SW / EW</strong><br />Side Wall / End Wall</div>
-            <div className="rounded border p-3"><strong>BASE O/M/I</strong><br />Footing outer / middle / inner</div>
-            <div className="rounded border p-3"><strong>WALL B/M/T</strong><br />Stem wall bottom / middle / top</div>
-            <div className="rounded border p-3"><strong>V-S / V-E</strong><br />Side/end vertical bars with 6 in bottom bent lap</div>
-            <div className="rounded border p-3"><strong>BV-12</strong><br />Small 12 in base verticals</div>
-            <div className="rounded border p-3"><strong>PC</strong><br />Pier cage / sonotube count confirmed by user</div>
+            <div className="rounded border p-3">
+              <strong>SW / EW</strong>
+              <br />
+              Side Wall / End Wall
+            </div>
+            <div className="rounded border p-3">
+              <strong>BASE O/M/I</strong>
+              <br />
+              Footing outer / middle / inner
+            </div>
+            <div className="rounded border p-3">
+              <strong>WALL B/M/T</strong>
+              <br />
+              Stem wall bottom / middle / top
+            </div>
+            <div className="rounded border p-3">
+              <strong>V-S / V-E</strong>
+              <br />
+              Side/end vertical bars with 6 in bottom bent lap
+            </div>
+            <div className="rounded border p-3">
+              <strong>BV-12</strong>
+              <br />
+              Small 12 in base verticals
+            </div>
+            <div className="rounded border p-3">
+              <strong>PC</strong>
+              <br />
+              Pier cage / sonotube count confirmed by user
+            </div>
           </div>
         </section>
 
@@ -971,13 +1571,23 @@ export default function Home() {
               </div>
 
               <div className="rounded border p-4">
-                <h3 className="mb-2 text-lg font-semibold">Selected Map Group</h3>
+                <h3 className="mb-2 text-lg font-semibold">
+                  Selected Map Group
+                </h3>
                 {selectedPrefix && selectedGroupLines.length > 0 ? (
                   <div>
                     <div className="mb-3 rounded bg-yellow-50 p-3 text-sm">
-                      <div><strong>Group:</strong> {selectedPrefix}</div>
-                      <div><strong>Pieces shown:</strong> {selectedGroupLines.length}</div>
-                      <div><strong>Location:</strong> {selectedGroupLines[0].location}</div>
+                      <div>
+                        <strong>Group:</strong> {selectedPrefix}
+                      </div>
+                      <div>
+                        <strong>Pieces shown:</strong>{" "}
+                        {selectedGroupLines.length}
+                      </div>
+                      <div>
+                        <strong>Location:</strong>{" "}
+                        {selectedGroupLines[0].location}
+                      </div>
                     </div>
 
                     <div className="max-h-[420px] overflow-y-auto rounded border">
@@ -997,10 +1607,16 @@ export default function Home() {
                               onClick={() => selectPiece(line)}
                               className={`cursor-pointer hover:bg-yellow-50 ${selectedMark === line.mark ? "bg-yellow-100" : ""}`}
                             >
-                              <td className="border-b p-2 font-bold">{line.mark}</td>
+                              <td className="border-b p-2 font-bold">
+                                {line.mark}
+                              </td>
                               <td className="border-b p-2">{line.cutLength}</td>
-                              <td className="border-b p-2 font-semibold">{line.usedLength}</td>
-                              <td className="border-b p-2 font-mono">{line.fieldOrder}</td>
+                              <td className="border-b p-2 font-semibold">
+                                {line.usedLength}
+                              </td>
+                              <td className="border-b p-2 font-mono">
+                                {line.fieldOrder}
+                              </td>
                             </tr>
                           ))}
                         </tbody>
@@ -1009,15 +1625,27 @@ export default function Home() {
 
                     {selectedLine && (
                       <div className="mt-3 rounded border bg-gray-50 p-3 text-sm">
-                        <div><strong>Selected Piece:</strong> {selectedLine.mark}</div>
-                        <div><strong>Required:</strong> {selectedLine.requiredLength}</div>
-                        <div><strong>Left:</strong> {selectedLine.leftFunction}</div>
-                        <div><strong>Right:</strong> {selectedLine.rightFunction}</div>
+                        <div>
+                          <strong>Selected Piece:</strong> {selectedLine.mark}
+                        </div>
+                        <div>
+                          <strong>Required:</strong>{" "}
+                          {selectedLine.requiredLength}
+                        </div>
+                        <div>
+                          <strong>Left:</strong> {selectedLine.leftFunction}
+                        </div>
+                        <div>
+                          <strong>Right:</strong> {selectedLine.rightFunction}
+                        </div>
                       </div>
                     )}
                   </div>
                 ) : (
-                  <div className="text-gray-500">Click a map label or schedule row to show all pieces in that group.</div>
+                  <div className="text-gray-500">
+                    Click a map label or schedule row to show all pieces in that
+                    group.
+                  </div>
                 )}
               </div>
             </div>
@@ -1035,7 +1663,9 @@ export default function Home() {
               >
                 <option value="ALL">All Pieces</option>
                 {filterOptions.map((option) => (
-                  <option key={option} value={option}>{option}</option>
+                  <option key={option} value={option}>
+                    {option}
+                  </option>
                 ))}
               </select>
               <button
@@ -1070,7 +1700,9 @@ export default function Home() {
                       <td className="border-b p-3">{line.qty}</td>
                       <td className="border-b p-3">{line.requiredLength}</td>
                       <td className="border-b p-3">{line.totalUsed}</td>
-                      <td className="border-b p-3 font-semibold">{line.status}</td>
+                      <td className="border-b p-3 font-semibold">
+                        {line.status}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -1080,13 +1712,41 @@ export default function Home() {
 
           {materialTakeoff && (
             <div className="mb-6 grid gap-3 md:grid-cols-7">
-              <div className="rounded border p-3"><strong>Total Cut</strong><br />{materialTakeoff.totalCut}</div>
-              <div className="rounded border p-3"><strong>Stock Length</strong><br />{materialTakeoff.stockLength}</div>
-              <div className="rounded border p-3"><strong>Sticks to Buy</strong><br />{materialTakeoff.sticksToBuy}</div>
-              <div className="rounded border p-3"><strong>Available</strong><br />{materialTakeoff.availableLength}</div>
-              <div className="rounded border p-3"><strong>Waste</strong><br />{materialTakeoff.waste}</div>
-              <div className="rounded border p-3"><strong>Cuts</strong><br />{materialTakeoff.cutCount}</div>
-              <div className="rounded border p-3"><strong>Bends</strong><br />{materialTakeoff.bendCount}</div>
+              <div className="rounded border p-3">
+                <strong>Total Cut</strong>
+                <br />
+                {materialTakeoff.totalCut}
+              </div>
+              <div className="rounded border p-3">
+                <strong>Stock Length</strong>
+                <br />
+                {materialTakeoff.stockLength}
+              </div>
+              <div className="rounded border p-3">
+                <strong>Sticks to Buy</strong>
+                <br />
+                {materialTakeoff.sticksToBuy}
+              </div>
+              <div className="rounded border p-3">
+                <strong>Available</strong>
+                <br />
+                {materialTakeoff.availableLength}
+              </div>
+              <div className="rounded border p-3">
+                <strong>Waste</strong>
+                <br />
+                {materialTakeoff.waste}
+              </div>
+              <div className="rounded border p-3">
+                <strong>Cuts</strong>
+                <br />
+                {materialTakeoff.cutCount}
+              </div>
+              <div className="rounded border p-3">
+                <strong>Bends</strong>
+                <br />
+                {materialTakeoff.bendCount}
+              </div>
             </div>
           )}
 
@@ -1121,11 +1781,17 @@ export default function Home() {
                       <td className="border-b p-3">{line.location}</td>
                       <td className="border-b p-3 font-semibold">{line.qty}</td>
                       <td className="border-b p-3">{line.requiredLength}</td>
-                      <td className="border-b p-3 font-semibold">{line.cutLength}</td>
+                      <td className="border-b p-3 font-semibold">
+                        {line.cutLength}
+                      </td>
                       <td className="border-b p-3">{line.leftFunction}</td>
-                      <td className="border-b p-3 font-semibold">{line.usedLength}</td>
+                      <td className="border-b p-3 font-semibold">
+                        {line.usedLength}
+                      </td>
                       <td className="border-b p-3">{line.rightFunction}</td>
-                      <td className="border-b p-3 font-mono">{line.fieldOrder}</td>
+                      <td className="border-b p-3 font-mono">
+                        {line.fieldOrder}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
