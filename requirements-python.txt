@@ -1,0 +1,5 @@
+pdfplumber
+PyMuPDF
+opencv-python
+pytesseract
+numpy

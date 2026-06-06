@@ -34,3 +34,14 @@ You can check out [the Next.js GitHub repository](https://github.com/vercel/next
 The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
 
 Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+
+
+## Python visual analyzer deployment
+
+The Vercel app cannot run local `python`/OpenCV directly. For production, deploy `python-analyzer-backend` as a separate Python service and set this Vercel environment variable:
+
+```text
+PYTHON_ANALYZER_URL=https://your-python-analyzer-service.onrender.com
+```
+
+If `PYTHON_ANALYZER_URL` is set, `/api/analyze-plan` forwards the uploaded PDF to the remote analyzer. If it is not set, local development falls back to running `scripts/spatial_analyzer.py` with `python`/`REBAR_PYTHON`.

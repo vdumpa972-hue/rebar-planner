@@ -440,8 +440,35 @@ export default function Home() {
     setVisualAnalysisStatus("Running PDF text + image analyzer...");
     const formData = new FormData();
     formData.append("blueprint", file);
-    const response = await fetch("/api/analyze-plan", { method: "POST", body: formData });
-    const analysis = (await response.json()) as VisualPlanAnalysis;
+
+    const directAnalyzerUrl = process.env.NEXT_PUBLIC_ANALYZER_URL?.replace(/\/$/, "");
+    const analyzeUrl = directAnalyzerUrl ? `${directAnalyzerUrl}/analyze` : "/api/analyze-plan";
+
+    let response: Response;
+    try {
+      response = await fetch(analyzeUrl, { method: "POST", body: formData });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const failed: VisualPlanAnalysis = {
+        success: false,
+        error: `Could not reach analyzer at ${analyzeUrl}: ${message}`,
+      };
+      setVisualAnalysis(failed);
+      setVisualAnalysisStatus(`Visual analyzer failed: ${failed.error}`);
+      return failed;
+    }
+
+    const rawText = await response.text();
+    let analysis: VisualPlanAnalysis;
+    try {
+      analysis = JSON.parse(rawText) as VisualPlanAnalysis;
+    } catch {
+      analysis = {
+        success: false,
+        error: `Analyzer returned non-JSON response. HTTP ${response.status}. ${rawText.slice(0, 300)}`,
+      };
+    }
+
     setVisualAnalysis(analysis);
     if (!response.ok || !analysis.success) {
       setVisualAnalysisStatus(`Visual analyzer failed: ${analysis.error || response.statusText}`);
