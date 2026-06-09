@@ -1,8 +1,6 @@
 services:
   - type: web
-    name: rebar-planner-python-analyzer
+    name: rebar-python-analyzer
     env: python
-    plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
-    healthCheckPath: /health

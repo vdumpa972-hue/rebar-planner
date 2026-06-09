@@ -1,26 +1,972 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --bg: #f4f6fb;
+  --panel: #ffffff;
+  --ink: #172033;
+  --muted: #60708a;
+  --line: #d8e0ec;
+  --brand: #1d4ed8;
+  --brand-dark: #173ea8;
+  --soft: #eaf1ff;
+  --danger: #b91c1c;
+  --ok: #15803d;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+* { box-sizing: border-box; }
+html, body { min-height: 100%; overflow-x: hidden; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: Arial, Helvetica, sans-serif;
+}
+a { color: inherit; }
+button, input, select, textarea { font: inherit; }
+button {
+  cursor: pointer;
+  border: 0;
+  border-radius: 10px;
+  padding: 9px 14px;
+  background: var(--brand);
+  color: white;
+  font-weight: 700;
+}
+button:hover { background: var(--brand-dark); }
+button.secondary { background: #e8edf5; color: #1f2937; }
+button.secondary:hover { background: #dbe3ef; }
+button.danger { background: var(--danger); }
+button:disabled { opacity: .55; cursor: not-allowed; }
+
+.page { max-width: 1480px; margin: 0 auto; padding: 18px; overflow-x: hidden; }
+.topbar {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+.brand { font-size: 22px; font-weight: 800; }
+.tabs { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.tab {
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: #fff;
+  border: 1px solid var(--line);
+  text-decoration: none;
+}
+.tab:hover { background: #f8fafc; }
+.panel {
+  min-width: 0;
+  overflow: hidden;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  box-shadow: 0 8px 30px rgba(15,23,42,.06);
+  padding: 16px;
+}
+.collectorGrid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.workspace {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(480px,1.15fr) minmax(420px,.85fr);
+  gap: 14px;
+}
+.field { display: flex; flex-direction: column; gap: 5px; margin-bottom: 10px; }
+.field label {
+  font-size: 12px;
+  font-weight: 800;
+  color: #42526b;
+  text-transform: uppercase;
+  letter-spacing: .03em;
+}
+.field input, .field select, .field textarea {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 9px;
+  background: #fff;
+  color: var(--ink);
+  width: 100%;
+}
+.field textarea { min-height: 72px; }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.muted { color: var(--muted); font-size: 13px; }
+.table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+.table th, .table td {
+  border-bottom: 1px solid var(--line);
+  padding: 8px;
+  text-align: left;
+  vertical-align: top;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.table th { font-size: 12px; color: #42526b; background: #f8fafc; }
+.table input, .table select { width: 100%; min-width: 0; padding: 6px; }
+.small { font-size: 12px; }
+.canvasWrap {
+  position: relative;
+  overflow: auto;
+  max-height: calc(100vh - 220px);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #eef2f7;
+}
+.pdfCanvas { display: block; }
+.selection {
+  position: absolute;
+  border: 2px dashed #dc2626;
+  background: rgba(220,38,38,.12);
+  pointer-events: none;
+}
+.cropCard {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px;
+  margin: 8px 0;
+  background: #fbfdff;
+}
+.cropThumb { max-width: 160px; max-height: 100px; border: 1px solid var(--line); border-radius: 8px; }
+.notice { padding: 10px 12px; background: var(--soft); border: 1px solid #b9ccff; border-radius: 12px; color: #163172; }
+.error { padding: 10px 12px; background: #fff1f2; border: 1px solid #fecdd3; border-radius: 12px; color: #9f1239; }
+.sectionTitle { font-weight: 900; margin: 18px 0 8px; }
+.pill { display: inline-flex; padding: 3px 8px; border-radius: 999px; background: #eef2ff; color: #3730a3; font-size: 12px; font-weight: 700; }
+.authBox { max-width: 460px; margin: 60px auto; }
+.splitButtons { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+hr { border: 0; border-top: 1px solid var(--line); margin: 16px 0; }
+h1, h2, h3 { margin-top: 0; }
+
+@media(max-width: 1000px) {
+  .workspace, .collectorGrid { grid-template-columns: 1fr; }
+  .canvasWrap { max-height: 70vh; }
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+.markMode { cursor: crosshair; }
+.smallButton { padding: 6px 10px; font-size: 14px; }
+.activeTab { background: var(--soft); border-color: #b9ccff; color: #163172; font-weight: 800; }
+.checkRow { display: flex; align-items: center; gap: 8px; margin: 10px 0 14px; color: var(--muted); font-size: 14px; }
+.checkRow input { width: auto; }
+.userTable th:nth-child(6), .userTable td:nth-child(6) { width: 110px; }
+
+.adminGrid { grid-template-columns: minmax(340px, .75fr) minmax(520px, 1.25fr); }
+.tableWrap { width: 100%; overflow-x: auto; }
+.between { justify-content: space-between; }
+.recordsTable th:nth-child(1) { width: 18%; }
+.recordsTable th:nth-child(2) { width: 20%; }
+.recordsTable th:nth-child(3), .recordsTable th:nth-child(4), .recordsTable th:nth-child(5) { width: 10%; }
+.recordsTable th:nth-child(6), .recordsTable th:nth-child(7), .recordsTable th:nth-child(8), .recordsTable th:nth-child(10) { width: 70px; }
+.recordsTable th:nth-child(9) { width: 150px; }
+.recordDetail { margin-top: 14px; }
+.jsonBox { max-height: 420px; overflow: auto; background: #0f172a; color: #e2e8f0; border-radius: 12px; padding: 14px; font-size: 12px; white-space: pre-wrap; }
+.cropListCompact { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 8px; }
+
+
+.evidencePicker {
+  position: relative;
+  width: 100%;
+}
+.evidencePicker summary {
+  list-style: none;
+  cursor: pointer;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: #fff;
+  padding: 7px 28px 7px 9px;
+  min-height: 34px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 13px;
+}
+.evidencePicker summary::-webkit-details-marker { display: none; }
+.evidencePicker summary::after {
+  content: "▾";
+  position: absolute;
+  right: 9px;
+  top: 7px;
+  color: var(--muted);
+}
+.evidencePicker[open] summary::after { content: "▴"; }
+.evidenceMenu {
+  position: absolute;
+  z-index: 50;
+  right: 0;
+  top: 40px;
+  width: min(360px, 80vw);
+  max-height: 260px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 18px 45px rgba(15,23,42,.18);
+  padding: 8px;
+}
+.evidenceOption {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px;
+  border-radius: 8px;
+  font-size: 13px;
+}
+.evidenceOption:hover { background: #f1f5f9; }
+.evidenceOption input { width: auto !important; min-width: 14px; }
+.evidenceHint {
+  color: var(--muted);
+  font-size: 12px;
+  padding: 7px;
+}
+
+.saveOk {
+  border-color: #b7e4c7;
+  background: #ecfdf3;
+  color: #146c43;
+}
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.editMode { border-color: #8b5cf6; background: #f5f3ff; color: #4c1d95; }
+.actionStack { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.buttonLink { display: inline-flex; align-items: center; justify-content: center; text-decoration: none; }
+
+.copyHeader {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  justify-content: space-between;
+  min-width: 0;
+}
+.copyHeader span {
+  overflow-wrap: anywhere;
+}
+.copyDownButton {
+  border: 1px solid #cbd5e1;
+  background: #f8fafc;
+  border-radius: 8px;
+  padding: 3px 6px;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.1;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.copyDownButton:hover {
+  background: #e0e7ff;
+  border-color: #818cf8;
+}
+
+/* Rebar schedule readability fixes */
+.table th, .table td { overflow-wrap: normal; word-break: normal; }
+.copyHeader { flex-direction: column; align-items: flex-start; gap: 3px; }
+.copyHeader span { white-space: nowrap; overflow-wrap: normal; font-size: 11px; }
+.copyDownButton { font-size: 10px; padding: 2px 5px; }
+
+.helpDot {
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  align-items: center;
+  justify-content: center;
+  background: #e0e7ff;
+  color: #3730a3;
+  font-size: 11px;
+  font-weight: 900;
+  margin-left: 4px;
+  cursor: help;
+}
+
+.rebarCopyBar {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: stretch;
+  padding: 10px;
+  margin: 10px 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #f8fafc;
+}
+.rebarCopyBar .copyHeader {
+  min-width: 88px;
+  padding: 6px 8px;
+  border-radius: 10px;
+  background: white;
+  border: 1px solid #e2e8f0;
+}
+
+.rebarCards { display: grid; gap: 12px; }
+.rebarCard {
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: #fff;
+  padding: 12px;
+}
+.rebarCardTitle {
+  font-weight: 900;
+  color: var(--ink);
+  margin-bottom: 10px;
+}
+.rebarGrid {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 10px;
+  align-items: end;
+}
+.compactField { grid-column: span 3; }
+.compactField.wideField { grid-column: span 6; }
+.compactField.smallField { grid-column: span 2; }
+.compactField label {
+  font-size: 11px;
+  letter-spacing: .05em;
+  line-height: 1.1;
+  white-space: nowrap;
+}
+.compactField input, .compactField select, .compactField .evidencePicker summary {
+  font-size: 14px;
+  min-height: 38px;
+}
+.evidenceField .evidencePicker { width: 100%; }
+.evidenceField .evidencePicker summary { display: flex; align-items: center; }
+@media (max-width: 1100px) {
+  .compactField, .compactField.smallField { grid-column: span 4; }
+  .compactField.wideField { grid-column: span 8; }
+}
+@media (max-width: 760px) {
+  .compactField, .compactField.smallField, .compactField.wideField { grid-column: span 12; }
+}
+
+/* Consolidated rebar cleanup: readable help popups, layer dropdowns, copy-down help */
+.copyHelpText {
+  margin: 8px 0 4px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+.copyDownButton {
+  min-width: 72px;
+  text-align: center;
+}
+.helpWrap {
+  position: relative;
+  display: inline-flex;
+  vertical-align: middle;
+  margin-left: 4px;
+}
+.helpDot {
+  border: 0;
+  padding: 0;
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  align-items: center;
+  justify-content: center;
+  background: #e0e7ff;
+  color: #3730a3;
+  font-size: 11px;
+  font-weight: 900;
+  cursor: help;
+  line-height: 1;
+}
+.helpDot:hover,
+.helpDot:focus {
+  background: #c7d2fe;
+  color: #1e1b4b;
+}
+.helpBubble {
+  display: none;
+  position: absolute;
+  z-index: 200;
+  left: 0;
+  top: 22px;
+  width: min(340px, 72vw);
+  white-space: normal;
+  text-transform: none;
+  letter-spacing: 0;
+  line-height: 1.35;
+  background: #111827;
+  color: #fff;
+  border-radius: 10px;
+  padding: 10px 12px;
+  box-shadow: 0 16px 40px rgba(15,23,42,.28);
+  font-size: 12px;
+  font-weight: 600;
+}
+.helpWrap:hover .helpBubble,
+.helpWrap:focus-within .helpBubble {
+  display: block;
+}
+.rebarCopyBar .copyHeader span {
+  font-size: 11px;
+  font-weight: 900;
+}
+.rebarGrid .compactField label {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 18px;
+}
+
+/* Users admin list: card layout to prevent email/username overlap */
+.userCards {
+  display: grid;
+  gap: 12px;
+}
+.userCard {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #fbfdff;
+  padding: 12px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: start;
+}
+.userCardMain {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 14px;
+  min-width: 0;
+}
+.userLine {
+  min-width: 0;
+}
+.userLine span {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  margin-bottom: 2px;
+}
+.userLine strong {
+  display: block;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  font-size: 14px;
+}
+.userActions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: flex-start;
+}
+@media (max-width: 760px) {
+  .userCard {
+    grid-template-columns: 1fr;
+  }
+  .userCardMain {
+    grid-template-columns: 1fr;
+  }
+  .userActions {
+    justify-content: flex-start;
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+.recordIdText {
+  display: inline-block;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+.recordsTable td, .recordsTable th {
+  vertical-align: top;
+}
+
+
+/* Training records admin list: card layout with obvious edit action */
+.recordCards {
+  display: grid;
+  gap: 14px;
+  margin-top: 14px;
+}
+
+.recordCard {
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: #fbfdff;
+  padding: 16px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.04);
+}
+
+.recordCardTop {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 16px;
+  align-items: start;
+  margin-bottom: 14px;
+}
+
+.recordTitleBlock {
+  min-width: 0;
+}
+
+.recordTitleBlock h3 {
+  margin: 0 0 4px 0;
+  font-size: 20px;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+.recordIdTextFull {
+  display: block;
+  max-width: 100%;
+  color: var(--muted);
+  background: #eef2ff;
+  border-radius: 8px;
+  padding: 4px 8px;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  font-size: 12px;
+}
+
+.recordActions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.recordMetaGrid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px 14px;
+}
+
+.recordMetaGrid div {
+  min-width: 0;
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}
+
+.recordMetaGrid span {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  margin-bottom: 2px;
+}
+
+.recordMetaGrid strong {
+  display: block;
+  font-size: 14px;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.emptyState {
+  border: 1px dashed var(--line);
+  border-radius: 14px;
+  padding: 18px;
+  color: var(--muted);
+  background: #f8fafc;
+}
+
+@media (max-width: 1000px) {
+  .recordCardTop {
+    grid-template-columns: 1fr;
+  }
+  .recordActions {
+    justify-content: flex-start;
+  }
+  .recordMetaGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 600px) {
+  .recordMetaGrid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Simplified schema v2 collector UI */
+.elementSection {
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: #ffffff;
+  margin: 18px 0;
+  padding: 14px;
+}
+.sectionHeader {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+.sectionHeader h3 {
+  margin: 0;
+  font-size: 18px;
+}
+.dataCard {
+  border: 1px solid #e5e7eb;
+  border-radius: 14px;
+  background: #f8fafc;
+  padding: 12px;
+  margin: 10px 0;
+}
+.miniGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(150px, 1fr));
+  gap: 10px;
+  align-items: end;
+}
+.grid2 {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(180px, 1fr));
+  gap: 12px;
+}
+.copyBar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 8px 0 12px;
+}
+.copyHelpText {
+  color: var(--muted);
+  font-size: 12px;
+  margin: 8px 0;
+}
+.copyDownButton {
+  border: 1px solid #bfdbfe;
+  color: #1d4ed8;
+  background: #eff6ff;
+  border-radius: 999px;
+  padding: 5px 9px;
+  font-size: 12px;
+  font-weight: 800;
+}
+.markBanner {
+  background: #fff7ed;
+  border: 1px solid #fed7aa;
+  color: #9a3412;
+  border-radius: 12px;
+  padding: 10px 12px;
+  margin: 10px 0;
+  font-weight: 800;
+}
+.evidenceHint {
+  color: var(--muted);
+  font-size: 12px;
+  padding: 6px 8px;
+}
+.cropList {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+.cropCard {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 8px;
+  background: white;
+  display: grid;
+  gap: 4px;
+}
+.cropCard img {
+  max-width: 100%;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+}
+@media (max-width: 900px) {
+  .miniGrid, .grid2 { grid-template-columns: 1fr; }
+}
+
+/* Patch: restore clean simplified-v2 form styling and fix crop rectangle offset */
+.pdfWrap {
+  position: relative;
+  overflow: auto;
+  max-height: calc(100vh - 300px);
+  min-height: 220px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #eef2f7;
+  margin-top: 12px;
+}
+.pdfWrap canvas {
+  display: block;
+}
+.pdfWrap .selection,
+.selection {
+  position: absolute;
+  border: 2px dashed #dc2626;
+  background: rgba(220, 38, 38, .12);
+  pointer-events: none;
+  z-index: 10;
+}
+
+.formPanel label,
+.cropBox label,
+.dataCard label,
+.elementSection label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 12px;
+  font-weight: 800;
+  color: #42526b;
+  text-transform: uppercase;
+  letter-spacing: .03em;
+}
+
+.formPanel input,
+.formPanel select,
+.formPanel textarea,
+.cropBox input,
+.cropBox select,
+.cropBox textarea,
+.dataCard input,
+.dataCard select,
+.dataCard textarea,
+.elementSection input,
+.elementSection select,
+.elementSection textarea {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 9px;
+  background: #fff;
+  color: var(--ink);
+  width: 100%;
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 400;
+}
+
+.formPanel textarea,
+.dataCard textarea,
+.elementSection textarea {
+  min-height: 72px;
+  resize: vertical;
+}
+
+.formPanel .grid2,
+.cropBox .grid2 {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(220px, 1fr));
+  gap: 12px 16px;
+  align-items: end;
+}
+
+.cropBox {
+  margin-top: 16px;
+  padding-top: 12px;
+}
+
+.formPanel .grid2 + label,
+.formPanel > label {
+  margin-top: 10px;
+}
+
+.elementSection {
+  background: #fff;
+  border: 1px solid var(--line);
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.04);
+}
+
+.dataCard {
+  background: #fbfdff;
+  border: 1px solid var(--line);
+}
+
+.miniGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(180px, 1fr));
+  gap: 12px;
+  align-items: end;
+}
+
+.evidencePicker summary {
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+}
+
+@media (max-width: 1000px) {
+  .formPanel .grid2,
+  .cropBox .grid2,
+  .miniGrid {
+    grid-template-columns: 1fr;
+  }
+  .pdfWrap { max-height: 70vh; }
+}
+
+
+.sectionNote {
+  margin: 0 0 12px 0;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.fieldCard {
+  border: 1px solid var(--line);
+  background: #f8fbff;
+  border-radius: 16px;
+  padding: 14px;
+  margin-bottom: 14px;
+}
+
+.fieldCard h4 {
+  margin: 0 0 10px 0;
+  font-size: 18px;
+}
+
+.wideField {
+  grid-column: 1 / -1;
+}
+
+/* Patch 2026-06-08: crop dropdown full names, safe form layout */
+.formPanel,
+.elementSection,
+.dataCard,
+.fieldCard,
+.miniGrid,
+.grid2 {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.miniGrid {
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  overflow: visible;
+}
+
+.formPanel label,
+.cropBox label,
+.dataCard label,
+.elementSection label {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: normal;
+  white-space: normal;
+}
+
+.formPanel input,
+.formPanel select,
+.formPanel textarea,
+.cropBox input,
+.cropBox select,
+.cropBox textarea,
+.dataCard input,
+.dataCard select,
+.dataCard textarea,
+.elementSection input,
+.elementSection select,
+.elementSection textarea {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.evidencePicker summary {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  line-height: 1.25;
+  padding-right: 34px;
+}
+
+.evidenceMenu {
+  left: 0;
+  right: auto;
+  width: min(520px, calc(100vw - 48px));
+  max-width: calc(100vw - 48px);
+}
+
+.evidenceOption span {
+  overflow-wrap: anywhere;
+  line-height: 1.25;
+}
+
+
+/* Patch 2026-06-08b: keep crop dropdown options readable inside form labels */
+.evidenceMenu {
+  box-sizing: border-box;
+  overflow-x: hidden;
+}
+
+.evidenceMenu .evidenceHint {
+  display: block;
+  max-width: 100%;
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 600;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.evidenceMenu .evidenceOption {
+  display: grid !important;
+  grid-template-columns: 26px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  max-width: 100%;
+  min-width: 0;
+  padding: 9px 10px;
+  flex-direction: row !important;
+}
+
+.evidenceMenu .evidenceOption input {
+  width: 18px !important;
+  min-width: 18px !important;
+  height: 18px;
+  margin: 0;
+}
+
+.evidenceMenu .evidenceOption span {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: normal;
+  text-align: left;
+  line-height: 1.25;
+}
+
+.bottomAddRow {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 16px;
+}
+
+/* Planner layout fixes: do not let legacy collector CSS override Tailwind grid utilities. */
+.adminGrid {
+  display: grid;
+  grid-template-columns: minmax(320px, 420px) minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+.tableWrap {
+  width: 100%;
+  overflow-x: auto;
+}
+.userTable {
+  table-layout: auto;
+  min-width: 900px;
+}
+.userTable th,
+.userTable td {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.userTable th:nth-child(1), .userTable td:nth-child(1) { min-width: 230px; }
+.userTable th:nth-child(2), .userTable td:nth-child(2) { min-width: 150px; }
+.userTable th:nth-child(3), .userTable td:nth-child(3) { min-width: 160px; }
+.userTable th:nth-child(4), .userTable td:nth-child(4) { min-width: 120px; }
+.userTable th:nth-child(5), .userTable td:nth-child(5) { min-width: 100px; }
+.userTable th:nth-child(6), .userTable td:nth-child(6) { min-width: 110px; }
+
+@media (max-width: 900px) {
+  .adminGrid {
+    grid-template-columns: 1fr;
+  }
 }

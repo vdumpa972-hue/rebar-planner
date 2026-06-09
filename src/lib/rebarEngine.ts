@@ -65,8 +65,9 @@ export function formatFeet(value: number): string {
   return `${feet}'-${inches}"`;
 }
 
-function functionNeedsLap(functionText: string): boolean {
-  return functionText.toLowerCase().includes("lap");
+function functionNeedsOverlap(functionText: string): boolean {
+  const clean = functionText.toLowerCase();
+  return clean.includes("overlap") || clean.includes("lap");
 }
 
 function buildHorizontalRun(params: {
@@ -75,16 +76,16 @@ function buildHorizontalRun(params: {
   location: string;
   requiredFeet: number;
   stockFeet: number;
-  lapFeet: number;
+  overlapFeet: number;
   leftEnd: string;
   rightEnd: string;
 }): ScheduleLine[] {
-  const { markBase, prefix, location, requiredFeet, stockFeet, lapFeet, leftEnd, rightEnd } = params;
+  const { markBase, prefix, location, requiredFeet, stockFeet, overlapFeet, leftEnd, rightEnd } = params;
   if (!requiredFeet || !stockFeet) return [];
 
-  const leftStartExtra = functionNeedsLap(leftEnd) ? lapFeet : 0;
-  const spliceExtra = lapFeet;
-  const rightEndExtra = functionNeedsLap(rightEnd) ? lapFeet : 0;
+  const leftStartExtra = functionNeedsOverlap(leftEnd) ? overlapFeet : 0;
+  const spliceExtra = overlapFeet;
+  const rightEndExtra = functionNeedsOverlap(rightEnd) ? overlapFeet : 0;
 
   const firstMaxUsed = stockFeet - leftStartExtra;
   const middleMaxUsed = stockFeet - spliceExtra;
@@ -136,10 +137,10 @@ function buildHorizontalRun(params: {
     const isFirst = index === 0;
     const isLast = index === usedValues.length - 1;
 
-    const leftFunction = isFirst ? leftEnd : `${formatFeet(lapFeet)} lap`;
+    const leftFunction = isFirst ? leftEnd : `${formatFeet(overlapFeet)} overlap`;
     const rightFunction = isLast ? rightEnd : "none";
-    const leftExtra = functionNeedsLap(leftFunction) ? lapFeet : 0;
-    const rightExtra = functionNeedsLap(rightFunction) ? lapFeet : 0;
+    const leftExtra = functionNeedsOverlap(leftFunction) ? overlapFeet : 0;
+    const rightExtra = functionNeedsOverlap(rightFunction) ? overlapFeet : 0;
     const cutFeet = leftExtra + usedFeet + rightExtra;
     const overStock = cutFeet > stockFeet + 0.01;
 
@@ -189,7 +190,7 @@ function buildVerticalGroup(params: {
   if (!qty || qty <= 0 || !usedFeet) return [];
 
   const cutFeet = usedFeet + bottomBendFeet;
-  const leftFunction = `${formatFeet(bottomBendFeet)} bottom bent lap`;
+  const leftFunction = `${formatFeet(bottomBendFeet)} bottom bent overlap`;
   const rightFunction = topClearanceFeet > 0 ? `${formatFeet(topClearanceFeet)} top clear` : "top";
   const clearanceNote =
     totalConcreteFeet > 0
@@ -252,27 +253,36 @@ function buildPierInfoGroup(params: {
   const { hasPiers, pierCount, pierDiameter, pierHeight } = params;
   if (!hasPiers || !pierCount || pierCount <= 0) return [];
 
+  const required = `${pierDiameter || "PIER_DIA missing"} dia x ${pierHeight || "PIER_HEIGHT missing"} high each`;
+  const baseLocation = `PIER cage (${pierDiameter || "PIER_DIA missing"} dia, ${pierHeight || "PIER_HEIGHT missing"} high)`;
+
+  const makeInfo = (mark: string, location: string, qty: number, note: string): ScheduleLine => ({
+    mark,
+    prefix: mark,
+    location,
+    requiredLength: required,
+    cutLength: "field detail",
+    leftFunction: "verify from pier footing detail",
+    usedLength: `${qty} pieces`,
+    rightFunction: "user confirm",
+    fieldOrder: `${mark}: ${note}. Pier count confirmed by user: ${pierCount}. Diameter: ${pierDiameter || "not entered"}. Height: ${pierHeight || "not entered"}.`,
+    totalUsedFeet: 0,
+    cutFeet: 0,
+    qty,
+  });
+
   return [
-    {
-      mark: "PC",
-      prefix: "PC",
-      location: `Pier cages / sonotubes (${pierDiameter || "diameter not entered"} dia, ${pierHeight || "height not entered"} high)`,
-      requiredLength: `${pierDiameter || "diameter not entered"} dia x ${pierHeight || "height not entered"} high each`,
-      cutLength: "field built",
-      leftFunction: "pier cage detail",
-      usedLength: `${pierCount} piers`,
-      rightFunction: "verify cage steel",
-      fieldOrder:
-        `Pier count confirmed by user: ${pierCount}. Diameter: ${pierDiameter || "not entered"}. ` +
-        `Height/cage height: ${pierHeight || "not entered"}. ` +
-        "Detailed pier cage bar schedule will be added in the next step.",
-      totalUsedFeet: 0,
-      cutFeet: 0,
-      qty: pierCount,
-    },
+    makeInfo("PIER_DIA", `${baseLocation} diameter`, pierCount, "Pier diameter value used for cage/sonotube planning"),
+    makeInfo("PIER_HEIGHT", `${baseLocation} height`, pierCount, "Pier height/cage height value used for cage planning"),
+    makeInfo("PR_HORZ_CIRC_HOOP_1_BOTTOM", `${baseLocation} bottom circular hoop`, pierCount, "Bottom horizontal circular hoop; length to be calculated from diameter/clear cover in pier module"),
+    makeInfo("PR_HORZ_CIRC_HOOP_2", `${baseLocation} circular hoop #2`, pierCount, "Intermediate horizontal circular hoop; spacing from #3 @ 8 in OC ties note must be confirmed"),
+    makeInfo("PR_HORZ_CIRC_HOOP_3", `${baseLocation} circular hoop #3`, pierCount, "Intermediate horizontal circular hoop; spacing from #3 @ 8 in OC ties note must be confirmed"),
+    makeInfo("PR_HORZ_CIRC_HOOP_4_TOP", `${baseLocation} top circular hoop`, pierCount, "Top horizontal circular hoop; length to be calculated from diameter/clear cover in pier module"),
+    makeInfo("PR_VERT_L_BARS_1", `${baseLocation} vertical L bars group 1`, pierCount * 2, "First pair of #4 vertical L bars; plan note says 6-#4 VERT REBARS"),
+    makeInfo("PR_VERT_L_BARS_2", `${baseLocation} vertical L bars group 2`, pierCount * 2, "Second pair of #4 vertical L bars; plan note says 6-#4 VERT REBARS"),
+    makeInfo("PR_VERT_L_BARS_3", `${baseLocation} vertical L bars group 3`, pierCount * 2, "Third pair of #4 vertical L bars; plan note says 6-#4 VERT REBARS"),
   ];
 }
-
 function summarize(schedule: ScheduleLine[]): SummaryLine[] {
   const groups = new Map<string, ScheduleLine[]>();
 
@@ -286,14 +296,14 @@ function summarize(schedule: ScheduleLine[]): SummaryLine[] {
   return Array.from(groups.entries()).map(([key, lines]) => {
     const [prefix, description, requiredLength] = key.split("__");
     const totalQty = lines.reduce((sum, line) => sum + line.qty, 0);
-    if (prefix === "PC") {
+    if (prefix === "PC" || prefix.startsWith("PIER_") || prefix.startsWith("PR_")) {
       return {
         prefix,
         description,
         qty: totalQty,
         requiredLength,
         totalUsed: `${totalQty} piers`,
-        status: "Pier details entered - cage steel to be detailed next",
+        status: "Info only - confirm pier cage steel before fabrication",
       };
     }
     const totalUsedFeet = lines.reduce((sum, line) => sum + line.totalUsedFeet * line.qty, 0);
@@ -366,9 +376,12 @@ export function generateRebarSchedule(params: {
   sideBaseMiddleLength?: string;
   sideBaseInnerLength?: string;
   endWallLength: string;
+  endBaseOuterLength?: string;
+  endBaseMiddleLength?: string;
+  endBaseInnerLength?: string;
   stockLengthFeet: number;
-  horizontalLapInches: number;
-  verticalBentLapInches: number;
+  horizontalOverlapInches: number;
+  verticalBentOverlapInches: number;
   sideVerticalQty?: string;
   endVerticalQty?: string;
   sideVerticalUsedHeight?: string;
@@ -392,9 +405,12 @@ export function generateRebarSchedule(params: {
   const sideBaseMiddleFeet = parseFeet(params.sideBaseMiddleLength || "") || sideFeet;
   const sideBaseInnerFeet = parseFeet(params.sideBaseInnerLength || "") || sideFeet;
   const endFeet = parseFeet(params.endWallLength);
+  const endBaseOuterFeet = parseFeet(params.endBaseOuterLength || "") || endFeet;
+  const endBaseMiddleFeet = parseFeet(params.endBaseMiddleLength || "") || endFeet;
+  const endBaseInnerFeet = parseFeet(params.endBaseInnerLength || "") || endFeet;
   const stockFeet = params.stockLengthFeet || 20;
-  const lapFeet = (params.horizontalLapInches || 24) / 12;
-  const verticalBentLapFeet = (params.verticalBentLapInches || 6) / 12;
+  const overlapFeet = (params.horizontalOverlapInches || 24) / 12;
+  const verticalBentOverlapFeet = (params.verticalBentOverlapInches || 6) / 12;
   const sideVerticalQty = Number(params.sideVerticalQty || 0);
   const endVerticalQty = Number(params.endVerticalQty || 0);
   const footingDepthFeet = parseFeet(params.footingDepth || "18\"");
@@ -435,75 +451,99 @@ export function generateRebarSchedule(params: {
   const schedule: ScheduleLine[] = [];
 
   const sideBasePositions = [
-    { code: "O", label: "Outer", requiredFeet: sideBaseOuterFeet },
-    { code: "M", label: "Middle", requiredFeet: sideBaseMiddleFeet },
-    { code: "I", label: "Inner", requiredFeet: sideBaseInnerFeet },
+    { mark: "SW_HORZ_CONT-BAR_Base-OUTER", label: "Base Outer", requiredFeet: sideBaseOuterFeet },
+    { mark: "SW_HORZ_CONT-BAR_Base-MIDDLE", label: "Base Middle", requiredFeet: sideBaseMiddleFeet },
+    { mark: "SW_HORZ_CONT-BAR_Base-INNER", label: "Base Inner", requiredFeet: sideBaseInnerFeet },
   ];
 
   for (const position of sideBasePositions) {
     schedule.push(
       ...buildHorizontalRun({
-        markBase: `SW-H-BASE-${position.code}`,
-        prefix: `SW-H-BASE-${position.code}`,
-        location: `Side Wall Horizontal Base ${position.label}`,
+        markBase: position.mark,
+        prefix: position.mark,
+        location: `SIDE-WALL ${position.label} horizontal continuous bar`,
         requiredFeet: position.requiredFeet,
         stockFeet,
-        lapFeet,
-        leftEnd: `${formatFeet(lapFeet)} lap & bent`,
-        rightEnd: `${formatFeet(lapFeet)} lap & bent`,
+        overlapFeet,
+        leftEnd: `${formatFeet(overlapFeet)} overlap & bent`,
+        rightEnd: `${formatFeet(overlapFeet)} overlap & bent`,
       })
     );
   }
 
   const sideWallPositions = [
-    { code: "B", label: "Bottom" },
-    { code: "M", label: "Middle" },
-    { code: "T", label: "Top" },
+    { mark: "SW_HORZ_CONT_BAR-BOTTOM_1", label: "Bottom #1" },
+    { mark: "SW_HORZ_CONT_BAR-2", label: "Middle #2" },
+    { mark: "SW_HORZ_CONT_BAR-TOP_3", label: "Top #3" },
+    { mark: "SW_HORZ_L_BAR", label: "L bar / corner return" },
   ];
 
   for (const position of sideWallPositions) {
     schedule.push(
       ...buildHorizontalRun({
-        markBase: `SW-H-WALL-${position.code}`,
-        prefix: `SW-H-WALL-${position.code}`,
-        location: `Side Wall Horizontal Stem ${position.label}`,
+        markBase: position.mark,
+        prefix: position.mark,
+        location: `SIDE-WALL ${position.label} horizontal bar`,
         requiredFeet: sideFeet,
         stockFeet,
-        lapFeet,
-        leftEnd: `${formatFeet(lapFeet)} lap & bent`,
-        rightEnd: `${formatFeet(lapFeet)} lap & bent`,
+        overlapFeet,
+        leftEnd: `${formatFeet(overlapFeet)} overlap & bent`,
+        rightEnd: `${formatFeet(overlapFeet)} overlap & bent`,
+      })
+    );
+  }
+
+  const endBasePositions = [
+    { mark: "EW_HORZ_CONT-BAR_Base-OUTER", label: "Base Outer", requiredFeet: endBaseOuterFeet },
+    { mark: "EW_HORZ_CONT-BAR_Base-MIDDLE", label: "Base Middle", requiredFeet: endBaseMiddleFeet },
+    { mark: "EW_HORZ_CONT-BAR_Base-INNER", label: "Base Inner", requiredFeet: endBaseInnerFeet },
+  ];
+
+  for (const position of endBasePositions) {
+    schedule.push(
+      ...buildHorizontalRun({
+        markBase: position.mark,
+        prefix: position.mark,
+        location: `END-WALL ${position.label} horizontal continuous bar`,
+        requiredFeet: position.requiredFeet,
+        stockFeet,
+        overlapFeet,
+        leftEnd: `${formatFeet(overlapFeet)} overlap & bent`,
+        rightEnd: `${formatFeet(overlapFeet)} overlap & bent`,
       })
     );
   }
 
   const endWallPositions = [
-    { code: "B", label: "Bottom" },
-    { code: "T", label: "Top" },
+    { mark: "EW_HORZ_CONT_BAR-BOTTOM_1", label: "Bottom #1" },
+    { mark: "EW_HORZ_CONT_BAR-2", label: "Middle #2" },
+    { mark: "EW_HORZ_CONT_BAR-TOP_3", label: "Top #3" },
+    { mark: "EW_HORZ_L_BAR", label: "L bar / corner return" },
   ];
 
   for (const position of endWallPositions) {
     schedule.push(
       ...buildHorizontalRun({
-        markBase: `EW-H-WALL-${position.code}`,
-        prefix: `EW-H-WALL-${position.code}`,
-        location: `End Wall Horizontal Stem ${position.label}`,
+        markBase: position.mark,
+        prefix: position.mark,
+        location: `END-WALL ${position.label} horizontal bar`,
         requiredFeet: endFeet,
         stockFeet,
-        lapFeet,
-        leftEnd: `${formatFeet(lapFeet)} lap & bent`,
-        rightEnd: `${formatFeet(lapFeet)} lap & bent`,
+        overlapFeet,
+        leftEnd: `${formatFeet(overlapFeet)} overlap & bent`,
+        rightEnd: `${formatFeet(overlapFeet)} overlap & bent`,
       })
     );
   }
 
   schedule.push(
     ...buildVerticalGroup({
-      mark: "V-S",
-      prefix: "V-S",
-      location: "Side Wall Vertical Bars",
+      mark: "SW_VERT_L_BAR",
+      prefix: "SW_VERT_L_BAR",
+      location: "SIDE-WALL vertical L bars",
       qty: sideVerticalQty,
       usedFeet: sideVerticalUsedFeet,
-      bottomBendFeet: verticalBentLapFeet,
+      bottomBendFeet: verticalBentOverlapFeet,
       totalConcreteFeet: sideTotalConcreteFeet,
       bottomClearanceFeet: sideVerticalBottomClearanceFeet,
       topClearanceFeet: sideVerticalTopClearanceFeet,
@@ -512,12 +552,12 @@ export function generateRebarSchedule(params: {
 
   schedule.push(
     ...buildVerticalGroup({
-      mark: "V-E",
-      prefix: "V-E",
-      location: "End Wall Vertical Bars",
+      mark: "EW_VERT_L_BAR",
+      prefix: "EW_VERT_L_BAR",
+      location: "END-WALL vertical L bars",
       qty: endVerticalQty,
       usedFeet: endVerticalUsedFeet,
-      bottomBendFeet: verticalBentLapFeet,
+      bottomBendFeet: verticalBentOverlapFeet,
       totalConcreteFeet: endTotalConcreteFeet,
       bottomClearanceFeet: endVerticalBottomClearanceFeet,
       topClearanceFeet: endVerticalTopClearanceFeet,
@@ -526,9 +566,9 @@ export function generateRebarSchedule(params: {
 
   schedule.push(
     ...buildSmallBaseVerticalGroup({
-      mark: "BV-12",
-      prefix: "BV-12",
-      location: "Small 12 in Base Verticals",
+      mark: "FOOTING_TIE_BAR",
+      prefix: "FOOTING_TIE_BAR",
+      location: "FOOTING_TIE_BAR connectors between footing steel and stem wall steel",
       qty: baseShortVerticalQty,
       cutFeet: baseShortVerticalCutFeet,
     })

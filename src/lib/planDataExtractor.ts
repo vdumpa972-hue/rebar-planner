@@ -123,7 +123,7 @@ function addSimulationDefaults(values: DetectedValue[]) {
     "sideVerticalTopClearance",
     '8"',
     "low",
-    "SIMULATION ONLY: default side top clearance; not read from PDF.",
+    "SIMULATION ONLY: default side wall top clearance; not read from PDF.",
     "default",
   );
   addValue(
@@ -139,7 +139,7 @@ function addSimulationDefaults(values: DetectedValue[]) {
     "endVerticalTopClearance",
     '3"',
     "low",
-    "SIMULATION ONLY: default end top clearance; not read from PDF.",
+    "SIMULATION ONLY: default end wall top clearance; not read from PDF.",
     "default",
   );
   addValue(
@@ -155,7 +155,7 @@ function addSimulationDefaults(values: DetectedValue[]) {
     "sideVerticalQty",
     "52",
     "low",
-    "SIMULATION ONLY: default side vertical bar count; not read from PDF.",
+    "SIMULATION ONLY: default side wall vertical bar count; not read from PDF.",
     "default",
   );
   addValue(
@@ -163,7 +163,7 @@ function addSimulationDefaults(values: DetectedValue[]) {
     "endVerticalQty",
     "16",
     "low",
-    "SIMULATION ONLY: default end vertical bar count; not read from PDF.",
+    "SIMULATION ONLY: default end wall vertical bar count; not read from PDF.",
     "default",
   );
   addValue(
@@ -277,7 +277,7 @@ export function extractDetectedValuesFromPlanText(
       "footingSize",
       '18" x 18"',
       "low",
-      "Inferred from repeated 18 in PDF text. Confirm full footing callout; this is not a drawing takeoff.",
+      "Inferred from repeated 18 in PDF text. Confirm full footing callout description; this is not a drawing takeoff.",
       "pdf-text",
     );
   }
@@ -307,7 +307,7 @@ export function extractDetectedValuesFromPlanText(
       "pierDiameter",
       '28"',
       "medium",
-      "28 in dimension found in PDF text near pier callouts.",
+      "28 in dimension found in PDF text near pier callout descriptions.",
       "pdf-text",
     );
   }
@@ -330,7 +330,7 @@ export function extractDetectedValuesFromPlanText(
       "endTotalHeight",
       '18.5"',
       "low",
-      "Calculated from end above-grade plus 6 in embed. Formula value, not directly read from PDF.",
+      "Calculated from end wall above-grade plus 6 in embed. Formula value, not directly read from PDF.",
       "calculated",
     );
   }

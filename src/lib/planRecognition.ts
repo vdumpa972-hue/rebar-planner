@@ -123,7 +123,7 @@ function scoreFoundationPage(pageText: string, dimensions: string[], keywordHits
     [/foundation/i, 7, "foundation keyword"],
     [/stem\s*wall/i, 8, "stem wall keyword"],
     [/footing/i, 6, "footing keyword"],
-    [/#\s*4|#4/i, 4, "#4 rebar callout"],
+    [/#\s*4|#4/i, 4, "#4 rebar callout description"],
     [/rebar/i, 5, "rebar keyword"],
     [/v[-\s]?s\b|v[-\s]?e\b/i, 5, "V-S/V-E keyword"],
     [/sonotube|pier/i, 4, "pier/sonotube keyword"],
