@@ -577,6 +577,8 @@ export default function Home() {
   const [openCropDropdownRowId, setOpenCropDropdownRowId] = useState("");
   const [plannerView, setPlannerView] = useState<"advanced" | "simple">("advanced");
   const [pdfZoom, setPdfZoom] = useState(100);
+  const [newEmptyRowIds, setNewEmptyRowIds] = useState<string[]>([]);
+
 
 
   const workspaceDocId = user?.uid || "";
@@ -1129,11 +1131,16 @@ export default function Home() {
     setFoundationRebarConfig((current) => ({ ...current, [key]: value }));
   }
 
-  function addRebarInfo() {
-    setRebarInfoRows((current) => [...current, createRebarInfoRow("Base/Bottom rebar", current.length + 1)]);
+  function addRebarInfo(place: "top" | "bottom" = "bottom") {
+    setRebarInfoRows((current) => {
+      const row = createRebarInfoRow("Base/Bottom rebar", current.length + 1);
+      setNewEmptyRowIds((ids) => ids.includes(row.id) ? ids : [...ids, row.id]);
+      return place === "top" ? [row, ...current] : [...current, row];
+    });
   }
 
   function updateRebarInfoRow(id: string, key: keyof RebarInfoRow, value: string) {
+    setNewEmptyRowIds((ids) => ids.filter((rowId) => rowId !== id));
     setRebarInfoRows((current) => current.map((row) => (row.id === id ? { ...row, [key]: value } : row)));
   }
 
@@ -2144,42 +2151,107 @@ export default function Home() {
     }
   }
 
-  function downloadCsv() {
-    const header = [
-      "Piece ID",
-      "Location",
-      "Qty",
-      "Required Len",
-      "Cut Len",
-      "Left Function",
-      "Used",
-      "Right Function",
-      "Field Order",
-    ];
+  function csvCell(value: unknown) {
+    return `"${String(value ?? "").replaceAll('"', '""')}"`;
+  }
 
-    const rows = schedule.map((line) => [
-      line.mark,
-      line.location,
+  const exportHeader = [
+    "Qty",
+    "Cut Len",
+    "Left Function",
+    "Used",
+    "Right Function",
+    "Piece ID",
+    "Location",
+    "Required Len",
+    "Field Order",
+  ];
+
+  function scheduleExportRows() {
+    return schedule.map((line) => [
       line.qty,
-      line.requiredLength,
       line.cutLength,
       line.leftFunction,
       line.usedLength,
       line.rightFunction,
+      line.mark,
+      line.location,
+      line.requiredLength,
       line.fieldOrder,
     ]);
+  }
 
-    const csv = [header, ...rows]
-      .map((row) =>
-        row.map((cell) => `"${String(cell).replaceAll('"', '""')}"`).join(","),
-      )
-      .join("\n");
+  function materialSummaryRows() {
+    return [
+      ["Summary", "Value"],
+      ["Total Cut", materialTakeoff?.totalCut || ""],
+      ["Stock Length", materialTakeoff?.stockLength || ""],
+      ["Sticks to Buy", materialTakeoff?.sticksToBuy ?? ""],
+      ["Available", materialTakeoff?.availableLength || ""],
+      ["Waste", materialTakeoff?.waste || ""],
+      ["Cuts", materialTakeoff?.cutCount ?? ""],
+      ["Bends", materialTakeoff?.bendCount ?? ""],
+      ["Stock sticks no change/no cut/no bend", materialTakeoff?.straightStockStickCount ?? 0],
+      ["Sticks needing cut/bend/partial use", materialTakeoff?.cutOrBentStockStickCount ?? 0],
+    ];
+  }
 
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  function downloadCsv() {
+    // CSV files cannot store colors, borders, or column widths.
+    // This keeps one download button but exports an Excel-compatible table so the schedule opens formatted.
+    downloadExcelWorkbook();
+  }
+
+  function xmlEscape(value: unknown) {
+    return String(value ?? "")
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;");
+  }
+
+  function xmlCell(value: unknown, styleId = "DataCell") {
+    return `<Cell ss:StyleID="${styleId}"><Data ss:Type="String">${xmlEscape(value)}</Data></Cell>`;
+  }
+
+  function excelRow(cells: unknown[], styleId = "DataCell", keyColumnCount = 5) {
+    return `<Row>${cells
+      .map((cell, index) => xmlCell(cell, index < keyColumnCount ? `${styleId}Key` : styleId))
+      .join("")}</Row>`;
+  }
+
+  function downloadExcelWorkbook() {
+    const pieceRows = scheduleExportRows();
+    const summaryRows = materialSummaryRows();
+    const blankRow = `<Row><Cell><Data ss:Type="String"></Data></Cell></Row>`;
+    const workbook = `<?xml version="1.0"?><?mso-application progid="Excel.Sheet"?>
+<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">
+<Styles>
+  <Style ss:ID="Header"><Font ss:Bold="1" ss:Color="#FFFFFF" ss:Size="12"/><Interior ss:Color="#1F4E79" ss:Pattern="Solid"/><Alignment ss:Horizontal="Left" ss:Vertical="Center" ss:WrapText="1"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="2"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders></Style>
+  <Style ss:ID="HeaderKey"><Font ss:Bold="1" ss:Color="#FFFFFF" ss:Size="12"/><Interior ss:Color="#8064A2" ss:Pattern="Solid"/><Alignment ss:Horizontal="Left" ss:Vertical="Center" ss:WrapText="1"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="2"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders></Style>
+  <Style ss:ID="DataCell"><Alignment ss:Horizontal="Left" ss:Vertical="Center" ss:WrapText="1"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders></Style>
+  <Style ss:ID="DataCellKey"><Font ss:Bold="1"/><Interior ss:Color="#EADCF8" ss:Pattern="Solid"/><Alignment ss:Horizontal="Left" ss:Vertical="Center" ss:WrapText="1"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders></Style>
+  <Style ss:ID="SummaryTitle"><Font ss:Bold="1" ss:Size="14" ss:Color="#FFFFFF"/><Interior ss:Color="#1F4E79" ss:Pattern="Solid"/><Alignment ss:Horizontal="Left" ss:Vertical="Center"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="2"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="2"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="2"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="2"/></Borders></Style>
+  <Style ss:ID="SummaryCell"><Font ss:Bold="1"/><Interior ss:Color="#D9EAF7" ss:Pattern="Solid"/><Alignment ss:Horizontal="Left" ss:Vertical="Center" ss:WrapText="1"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders></Style>
+  <Style ss:ID="SummaryValue"><Alignment ss:Horizontal="Left" ss:Vertical="Center"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders></Style>
+</Styles>
+<Worksheet ss:Name="Rebar Schedule">
+<Table>
+  <Column ss:Width="95"/><Column ss:Width="115"/><Column ss:Width="210"/><Column ss:Width="115"/><Column ss:Width="230"/><Column ss:Width="210"/><Column ss:Width="380"/><Column ss:Width="140"/><Column ss:Width="420"/>
+  ${excelRow(exportHeader, "Header")}
+  ${pieceRows.map((row) => excelRow(row, "DataCell")).join("")}
+  ${blankRow}${blankRow}
+  <Row><Cell ss:MergeAcross="1" ss:StyleID="SummaryTitle"><Data ss:Type="String">Material Summary</Data></Cell></Row>
+  ${summaryRows.map((row, index) => `<Row>${row.map((cell, col) => xmlCell(cell, index === 0 ? (col === 0 ? "HeaderKey" : "Header") : col === 0 ? "SummaryCell" : "SummaryValue")).join("")}</Row>`).join("")}
+</Table>
+<WorksheetOptions xmlns="urn:schemas-microsoft-com:office:excel"><FreezePanes/><FrozenNoSplit/><SplitHorizontal>1</SplitHorizontal><TopRowBottomPane>1</TopRowBottomPane><ActivePane>2</ActivePane></WorksheetOptions>
+</Worksheet>
+</Workbook>`;
+    const blob = new Blob([workbook], { type: "application/vnd.ms-excel;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = `${projectName.replaceAll(" ", "-").toLowerCase()}-rebar-schedule.csv`;
+    link.download = `${projectName.replaceAll(" ", "-").toLowerCase()}-rebar-schedule.xls`;
     link.click();
     URL.revokeObjectURL(url);
   }
@@ -2201,12 +2273,7 @@ export default function Home() {
   const showingCalculatedParams = paramViewMode === "calculated";
   const displayedGlobalParams = showingCalculatedParams && calculatedGlobals ? calculatedGlobals : rebarGlobalParams;
   const rawDisplayedRows = showingCalculatedParams && calculatedRows.length > 0 ? calculatedRows : rebarInfoRows;
-  const rebarTypeOrder: RebarInfoType[] = ["Base/Bottom rebar", "Horiz continues longtidues", "Vertical Rebar", "Pier", "Misc"];
-  const displayedRows = [...rawDisplayedRows].sort((a, b) => {
-    const typeDiff = rebarTypeOrder.indexOf(a.itemType) - rebarTypeOrder.indexOf(b.itemType);
-    if (typeDiff !== 0) return typeDiff;
-    return rebarInfoRows.findIndex((row) => row.id === a.id) - rebarInfoRows.findIndex((row) => row.id === b.id);
-  });
+  const displayedRows = rawDisplayedRows;
 
   return (
     <main className="min-h-screen bg-gray-100 p-6">
@@ -3281,12 +3348,19 @@ export default function Home() {
               )}
 
               <div className="mb-3 flex justify-end">
-                <button type="button" onClick={addRebarInfo} disabled={showingCalculatedParams} className="rounded bg-blue-700 px-3 py-2 font-semibold text-white hover:bg-blue-800 disabled:cursor-not-allowed disabled:bg-gray-400">Add rebar info</button>
+                <button type="button" onClick={() => addRebarInfo("top")} disabled={showingCalculatedParams} className="rounded bg-blue-700 px-3 py-2 font-semibold text-white hover:bg-blue-800 disabled:cursor-not-allowed disabled:bg-gray-400">Add rebar info</button>
               </div>
 
               <div className="grid gap-4">
-                {displayedRows.map((row, rowIndex) => (
-                  <div key={row.id} className={`rounded-lg border bg-white p-4 ${showingCalculatedParams ? "pointer-events-none opacity-95" : ""}`}>
+                {displayedRows.map((row, rowIndex) => {
+                  const isNewEmptyRow = newEmptyRowIds.includes(row.id);
+                  return (
+                  <div key={row.id} className={`rounded-lg border p-4 ${isNewEmptyRow ? "border-amber-400 bg-amber-50" : "bg-white"} ${showingCalculatedParams ? "pointer-events-none opacity-95" : ""}`}>
+                    {isNewEmptyRow && (
+                      <div className="mb-3 rounded border border-amber-300 bg-amber-100 p-2 text-sm font-semibold text-amber-900">
+                        NEW EMPTY ROW — enter or change any value and this warning will disappear.
+                      </div>
+                    )}
                     <div className="grid gap-4">
                       <div className="grid gap-4 md:grid-cols-4">
                         <label className="font-semibold">Type {showingCalculatedParams && getCompareBadge(rebarInfoRows[rowIndex]?.itemType, row.itemType)}
@@ -3597,11 +3671,12 @@ export default function Home() {
                       </div>
                     )}
                   </div>
-                ))}
+                  );
+                })}
               </div>
 
               <div className="mt-4 flex justify-end">
-                <button type="button" onClick={addRebarInfo} disabled={showingCalculatedParams} className="rounded bg-blue-700 px-3 py-2 font-semibold text-white hover:bg-blue-800 disabled:cursor-not-allowed disabled:bg-gray-400">Add rebar info</button>
+                <button type="button" onClick={() => addRebarInfo("bottom")} disabled={showingCalculatedParams} className="rounded bg-blue-700 px-3 py-2 font-semibold text-white hover:bg-blue-800 disabled:cursor-not-allowed disabled:bg-gray-400">Add rebar info</button>
               </div>
             </div>
           </div>
@@ -3908,12 +3983,12 @@ export default function Home() {
                 {materialTakeoff.bendCount}
               </div>
               <div className="rounded border p-3">
-                <strong>Full sticks straight/no cut</strong>
+                <strong>Stock sticks no change/no cut/no bend</strong>
                 <br />
                 {materialTakeoff.straightStockStickCount ?? 0}
               </div>
               <div className="rounded border p-3">
-                <strong>Sticks need cut/bend</strong>
+                <strong>Sticks needing cut/bend/partial use</strong>
                 <br />
                 {materialTakeoff.cutOrBentStockStickCount ?? 0}
               </div>
@@ -3934,14 +4009,14 @@ export default function Home() {
                   <table className="w-full border-collapse text-left text-sm">
                     <thead className="bg-gray-100">
                       <tr>
+                        <th className="border-b bg-yellow-100 p-3 text-base font-extrabold text-yellow-950">Qty</th>
+                        <th className="border-b bg-yellow-100 p-3 text-base font-extrabold text-yellow-950">Cut Len</th>
+                        <th className="border-b bg-yellow-100 p-3 text-base font-extrabold text-yellow-950">Left Function</th>
+                        <th className="border-b bg-yellow-100 p-3 text-base font-extrabold text-yellow-950">Used</th>
+                        <th className="border-b bg-yellow-100 p-3 text-base font-extrabold text-yellow-950">Right Function</th>
                         <th className="border-b p-3">Piece ID</th>
                         <th className="border-b p-3">Location</th>
-                        <th className="border-b p-3">Qty</th>
                         <th className="border-b p-3">Required Len</th>
-                        <th className="border-b p-3">Cut Len</th>
-                        <th className="border-b p-3">Left Function</th>
-                        <th className="border-b p-3">Used</th>
-                        <th className="border-b p-3">Right Function</th>
                         <th className="border-b p-3">Field Order / Check</th>
                       </tr>
                     </thead>
@@ -3952,18 +4027,18 @@ export default function Home() {
                           onClick={() => selectPiece(line)}
                           className={`cursor-pointer hover:bg-yellow-50 ${selectedMark === line.mark ? "bg-yellow-100" : ""}`}
                         >
-                          <td className="border-b p-3 font-bold">{line.mark}</td>
-                          <td className="border-b p-3">{line.location}</td>
-                          <td className="border-b p-3 font-semibold">{line.qty}</td>
-                          <td className="border-b p-3">{line.requiredLength}</td>
-                          <td className="border-b p-3 font-semibold">
+                          <td className="border-b bg-yellow-50 p-3 text-base font-extrabold text-yellow-950">{line.qty}</td>
+                          <td className="border-b bg-yellow-50 p-3 text-base font-extrabold text-yellow-950">
                             {line.cutLength}
                           </td>
-                          <td className="border-b p-3">{line.leftFunction}</td>
-                          <td className="border-b p-3 font-semibold">
+                          <td className="border-b bg-yellow-50 p-3 text-base font-bold text-yellow-950">{line.leftFunction}</td>
+                          <td className="border-b bg-yellow-50 p-3 text-base font-extrabold text-yellow-950">
                             {line.usedLength}
                           </td>
-                          <td className="border-b p-3">{line.rightFunction}</td>
+                          <td className="border-b bg-yellow-50 p-3 text-base font-bold text-yellow-950">{line.rightFunction}</td>
+                          <td className="border-b p-3 font-bold">{line.mark}</td>
+                          <td className="border-b p-3">{line.location}</td>
+                          <td className="border-b p-3">{line.requiredLength}</td>
                           <td className="border-b p-3 font-mono">
                             {line.fieldOrder}
                           </td>
