@@ -970,3 +970,12 @@ button:disabled {
     grid-template-columns: 1fr;
   }
 }
+
+.plainButton {
+  background: #ffffff !important;
+  color: var(--ink) !important;
+  border: 1px solid var(--line) !important;
+  border-radius: 8px !important;
+  font-weight: 700 !important;
+}
+.plainButton:hover { background: #f8fafc !important; }

@@ -1,20 +1,22 @@
 import { initializeApp, getApps, getApp, type FirebaseApp } from "firebase/app";
 import { getAuth, type Auth } from "firebase/auth";
 import { getFirestore } from "firebase/firestore";
+import { getStorage } from "firebase/storage";
 
 export const firebaseConfig = {
-  apiKey: "AIzaSyCxF1N8xFBF4R9i8v5E25H58ov04snJ7l4",
-  authDomain: "rebar-training-collector.firebaseapp.com",
-  projectId: "rebar-training-collector",
-  storageBucket: "rebar-training-collector.firebasestorage.app",
-  messagingSenderId: "509682482486",
-  appId: "1:509682482486:web:988be7de46da2206b1c797",
+  apiKey: "AIzaSyAE5rjEamWW2BEq76aRQPWvnNc6-2AyQ1M",
+  authDomain: "rebar-planner.firebaseapp.com",
+  projectId: "rebar-planner",
+  storageBucket: "rebar-planner.firebasestorage.app",
+  messagingSenderId: "654784634382",
+  appId: "1:654784634382:web:46225215b2ab2e2153265f",
 };
 
 const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
 
 export const auth = getAuth(app);
 export const db = getFirestore(app);
+export const storage = getStorage(app);
 
 export function getSecondaryAuth(): Auth {
   const appName = "collector-user-creator";

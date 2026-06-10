@@ -30,6 +30,10 @@ export type MaterialTakeoff = {
   waste: string;
   cutCount: number;
   bendCount: number;
+  bentPieceCount: number;
+  straightPieceCount: number;
+  straightStockStickCount: number;
+  cutOrBentStockStickCount: number;
 };
 
 export type RebarResult = {
@@ -333,7 +337,24 @@ function getMaterialTakeoff(schedule: ScheduleLine[], stockFeet: number): Materi
     const bendsPerPiece = functions.includes("bent") ? 1 : 0;
     return sum + bendsPerPiece * line.qty;
   }, 0);
+  const bentPieceCount = cutLines.reduce((sum, line) => {
+    const functions = `${line.leftFunction} ${line.rightFunction}`.toLowerCase();
+    return sum + (functions.includes("bent") ? line.qty : 0);
+  }, 0);
+  const straightPieceCount = Math.max(cutCount - bentPieceCount, 0);
   const sticksToBuy = totalCutFeet > 0 ? Math.ceil(totalCutFeet / stockFeet) : 0;
+
+  // Stock-stick view: from the total sticks to buy, count how many can be
+  // used as a full straight stock stick with no cutting and no bending.
+  // Everything else is a stick that needs cutting, bending, or is partially used/waste.
+  const straightStockStickCount = cutLines.reduce((sum, line) => {
+    const functions = `${line.leftFunction} ${line.rightFunction}`.toLowerCase();
+    const hasBent = functions.includes("bent");
+    const isFullStockLength = Math.abs(line.cutFeet - stockFeet) < 0.01;
+    return sum + (!hasBent && isFullStockLength ? line.qty : 0);
+  }, 0);
+  const cutOrBentStockStickCount = Math.max(sticksToBuy - straightStockStickCount, 0);
+
   const availableFeet = sticksToBuy * stockFeet;
   const wasteFeet = Math.max(availableFeet - totalCutFeet, 0);
 
@@ -345,6 +366,10 @@ function getMaterialTakeoff(schedule: ScheduleLine[], stockFeet: number): Materi
     waste: formatFeet(wasteFeet),
     cutCount,
     bendCount,
+    bentPieceCount,
+    straightPieceCount,
+    straightStockStickCount,
+    cutOrBentStockStickCount,
   };
 }
 
@@ -582,6 +607,416 @@ export function generateRebarSchedule(params: {
       pierHeight,
     })
   );
+
+  return {
+    schedule,
+    summary: summarize(schedule),
+    materialTakeoff: getMaterialTakeoff(schedule, stockFeet),
+  };
+}
+
+
+type ManualRebarRowInput = {
+  itemType?: string;
+  segment?: string;
+  length?: string;
+  count?: string;
+  number?: string;
+  spacingBetween?: string;
+  rebarSize?: string;
+  duplicateTimes?: string;
+  calcLength?: string;
+  side1Bent?: string;
+  side1BentLength?: string;
+  side2Bent?: string;
+  side2BentLength?: string;
+  traverseNumber?: string;
+  traverseSpacing?: string;
+  traverseLength?: string;
+  verticalBent?: string;
+  verticalBentLength?: string;
+  verticalSpacingAdjacent?: string;
+  diameter?: string;
+  clearanceTop?: string;
+  clearanceBottom?: string;
+  clearanceSides?: string;
+  horizontalCircleCount?: string;
+  numVerticalBars?: string;
+  spacing?: string;
+  note?: string;
+};
+
+function parseCountValue(value?: string, fallback = 0): number {
+  const clean = (value || "").trim().toLowerCase();
+  if (!clean || clean === "n/a" || clean === "na") return fallback;
+  const n = Number(clean.replace(/[^0-9.-]/g, ""));
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
+}
+
+function isNA(value?: string): boolean {
+  const clean = (value || "").trim().toLowerCase();
+  return clean === "n/a" || clean === "na";
+}
+
+function isBlankOrNA(value?: string): boolean {
+  const clean = (value || "").trim().toLowerCase();
+  return !clean || clean === "n/a" || clean === "na";
+}
+
+function normalizedManualType(row: ManualRebarRowInput): string {
+  return (row.itemType || "Misc").trim().toLowerCase();
+}
+
+function isPierRow(row: ManualRebarRowInput): boolean {
+  return normalizedManualType(row) === "pier";
+}
+
+function totalBaseBottomRunFeet(rows: ManualRebarRowInput[]): number {
+  return rows
+    .filter((row) => (row.itemType || "").trim() === "Base/Bottom rebar")
+    .reduce((sum, row) => {
+      const lenFeet = parseFeet(row.length || "");
+      const dup = parseCountValue(row.duplicateTimes, 2);
+      return sum + lenFeet * dup;
+    }, 0);
+}
+
+function firstPierLikeRow(rows: ManualRebarRowInput[]): ManualRebarRowInput | undefined {
+  return rows.find((row) => isPierRow(row));
+}
+
+function inferVerticalStraightFeet(row: ManualRebarRowInput, allRows: ManualRebarRowInput[]): { feet: number; note: string } {
+  const enteredFeet = parseFeet(row.length || "");
+  const pier = firstPierLikeRow(allRows);
+  const topClearance = parseFeet(row.clearanceTop || pier?.clearanceTop || "");
+  const bottomClearance = parseFeet(row.clearanceBottom || pier?.clearanceBottom || "");
+  if (enteredFeet > 0) {
+    const clearanced = Math.max(enteredFeet - topClearance - bottomClearance, 0);
+    if ((topClearance > 0 || bottomClearance > 0) && clearanced > 0) {
+      return { feet: clearanced, note: `, straight len ${formatFeet(enteredFeet)} minus top/bottom clearance ${formatFeet(topClearance + bottomClearance)}` };
+    }
+    return { feet: enteredFeet, note: "" };
+  }
+  const pierHeight = parseFeet(pier?.length || "");
+  if (pierHeight > 0) {
+    const clearanced = Math.max(pierHeight - topClearance - bottomClearance, 0);
+    if (clearanced > 0) {
+      return { feet: clearanced, note: `, straight len inferred from pier length ${formatFeet(pierHeight)} minus top/bottom clearance ${formatFeet(topClearance + bottomClearance)}` };
+    }
+  }
+  return { feet: 0, note: "" };
+}
+
+function manualEndExtra(row: ManualRebarRowInput, side: 1 | 2, fallbackFeet: number): number {
+  const bent = side === 1 ? row.side1Bent : row.side2Bent;
+  const rawLen = side === 1 ? row.side1BentLength : row.side2BentLength;
+  if ((bent || "").toLowerCase() !== "yes") return 0;
+  return parseFeet(rawLen || "") || fallbackFeet;
+}
+
+function buildManualContinuousRun(params: {
+  markBase: string;
+  prefix: string;
+  location: string;
+  straightFeet: number;
+  stockFeet: number;
+  overlapFeet: number;
+  leftBendFeet: number;
+  rightBendFeet: number;
+}): ScheduleLine[] {
+  const { markBase, prefix, location, straightFeet, stockFeet, overlapFeet, leftBendFeet, rightBendFeet } = params;
+  if (!straightFeet || straightFeet <= 0 || !stockFeet || stockFeet <= 0) return [];
+
+  const pieces: { used: number; leftExtra: number; rightExtra: number; leftText: string; rightText: string }[] = [];
+  let remaining = straightFeet;
+  let index = 0;
+
+  while (remaining > 0.01 && index < 100) {
+    const isFirst = index === 0;
+    const leftExtra = isFirst ? leftBendFeet : overlapFeet;
+    const leftText = isFirst
+      ? leftBendFeet > 0 ? `${formatFeet(leftBendFeet)} bent return` : "start"
+      : `${formatFeet(overlapFeet)} lap splice`;
+
+    const fitsAsLastCapacity = stockFeet - leftExtra - rightBendFeet;
+    const canFinish = remaining <= fitsAsLastCapacity + 0.01;
+    const rightExtra = canFinish ? rightBendFeet : 0;
+    const rightText = canFinish
+      ? rightBendFeet > 0 ? `${formatFeet(rightBendFeet)} bent return` : "end"
+      : "continue to next stick";
+    const capacity = Math.max(stockFeet - leftExtra - rightExtra, 0);
+    const used = Math.min(remaining, capacity);
+
+    if (used <= 0.01) {
+      pieces.push({ used: 0, leftExtra, rightExtra, leftText, rightText: "CHECK: bend/lap longer than stock" });
+      break;
+    }
+
+    pieces.push({ used, leftExtra, rightExtra, leftText, rightText });
+    remaining -= used;
+    index += 1;
+  }
+
+  const totalCutFeet = pieces.reduce((sum, piece) => sum + piece.leftExtra + piece.used + piece.rightExtra, 0);
+  const totalStraightFeet = pieces.reduce((sum, piece) => sum + piece.used, 0);
+
+  return pieces.map((piece, pieceIndex) => {
+    const cutFeet = piece.leftExtra + piece.used + piece.rightExtra;
+    const overStock = cutFeet > stockFeet + 0.01;
+    return {
+      mark: `${markBase}-${pieceIndex + 1}`,
+      prefix,
+      location: `${location}; adjusted straight run ${formatFeet(straightFeet)}${Math.abs(totalStraightFeet - straightFeet) > 0.05 ? " CHECK straight" : ""}`,
+      requiredLength: `${formatFeet(totalCutFeet)} total cut incl. bends/laps`,
+      cutLength: formatFeet(cutFeet),
+      leftFunction: piece.leftText,
+      usedLength: formatFeet(piece.used),
+      rightFunction: piece.rightText,
+      fieldOrder: `${formatFeet(cutFeet)} cut = ${piece.leftText} | ${formatFeet(piece.used)} straight run | ${piece.rightText}${overStock ? " - CHECK: over stick length" : " - OK"}`,
+      totalUsedFeet: cutFeet,
+      cutFeet,
+      qty: 1,
+    };
+  });
+}
+
+function buildManualSimplePieces(params: {
+  mark: string;
+  prefix: string;
+  location: string;
+  qty: number;
+  cutFeet: number;
+  leftFunction: string;
+  rightFunction: string;
+}): ScheduleLine[] {
+  const { mark, prefix, location, qty, cutFeet, leftFunction, rightFunction } = params;
+  if (!qty || qty <= 0 || !cutFeet || cutFeet <= 0) return [];
+  return [{
+    mark,
+    prefix,
+    location,
+    requiredLength: `${formatFeet(cutFeet)} each`,
+    cutLength: formatFeet(cutFeet),
+    leftFunction,
+    usedLength: formatFeet(cutFeet),
+    rightFunction,
+    fieldOrder: `${formatFeet(cutFeet)} cut each = ${leftFunction} | ${formatFeet(cutFeet)} used | ${rightFunction} - OK`,
+    totalUsedFeet: cutFeet,
+    cutFeet,
+    qty,
+  }];
+}
+
+function buildManualCheckLine(params: {
+  mark: string;
+  prefix: string;
+  location: string;
+  qty: number;
+  message: string;
+}): ScheduleLine[] {
+  const { mark, prefix, location, qty, message } = params;
+  return [{
+    mark,
+    prefix,
+    location,
+    requiredLength: "missing / needs input",
+    cutLength: "CHECK",
+    leftFunction: "missing input",
+    usedLength: "0",
+    rightFunction: "check row",
+    fieldOrder: message,
+    totalUsedFeet: 0,
+    cutFeet: 0,
+    qty: qty > 0 ? qty : 1,
+  }];
+}
+
+export function generateManualRebarSchedule(params: {
+  rows: ManualRebarRowInput[];
+  stockLength: string;
+  defaultOverlap: string;
+  defaultVerticalToBase: string;
+  defaultFoundationRebarSize: string;
+  defaultPierRebarSize: string;
+}): RebarResult {
+  const stockFeet = parseFeet(params.stockLength) || 20;
+  const overlapFeet = parseFeet(params.defaultOverlap) || 2;
+  const defaultBendFeet = parseFeet(params.defaultVerticalToBase) || 0.5;
+  const schedule: ScheduleLine[] = [];
+  const baseBottomTotalRunFeet = totalBaseBottomRunFeet(params.rows);
+
+  for (const [rowIndex, row] of params.rows.entries()) {
+    const segment = (row.segment || `ROW_${rowIndex + 1}`).replace(/\s+/g, "_").toUpperCase();
+    const type = (row.itemType || "Misc").trim();
+    const normalizedType = normalizedManualType(row);
+    const isBaseBottom = normalizedType === "base/bottom rebar";
+    const isHorizontalContinuous = normalizedType === "horiz continues longtidues";
+    const isPier = normalizedType === "pier";
+    const rebarSize = row.rebarSize || (isPier ? params.defaultPierRebarSize : params.defaultFoundationRebarSize);
+
+    if (isBaseBottom || isHorizontalContinuous) {
+      const barCount = parseCountValue(row.number, 1);
+      const duplicateTimes = parseCountValue(row.duplicateTimes, isBaseBottom ? 2 : 1);
+      const baseStraightFeet = parseFeet(row.length || "");
+      const spacingFeet = parseFeet(row.spacingBetween || "");
+      const leftBendFeet = manualEndExtra(row, 1, overlapFeet);
+      const rightBendFeet = manualEndExtra(row, 2, overlapFeet);
+
+      for (let duplicateIndex = 0; duplicateIndex < duplicateTimes; duplicateIndex += 1) {
+        const duplicateLabel = duplicateTimes > 1 ? `side ${duplicateIndex + 1} of ${duplicateTimes}` : "single side";
+        for (let barIndex = 0; barIndex < barCount; barIndex += 1) {
+          const offsetFeet = spacingFeet * barIndex;
+          const locationAdjustment = isBaseBottom
+            ? (leftBendFeet > 0 ? offsetFeet : 0) + (rightBendFeet > 0 ? offsetFeet : 0)
+            : 0;
+          const straightFeet = Math.max(baseStraightFeet - locationAdjustment, 0);
+          const positionName = barCount === 1 ? "single" : barIndex === 0 ? "outer" : barIndex === barCount - 1 ? "inner" : `middle ${barIndex}`;
+          schedule.push(...buildManualContinuousRun({
+            markBase: `${segment}_D${duplicateIndex + 1}_CONT_${barIndex + 1}`,
+            prefix: `${segment}_D${duplicateIndex + 1}_CONT_${barIndex + 1}`,
+            location: `${row.segment || segment} ${duplicateLabel} ${positionName} ${rebarSize} continuous bar${spacingFeet ? `, offset ${formatFeet(offsetFeet)} from outside` : ""}`,
+            straightFeet,
+            stockFeet,
+            overlapFeet,
+            leftBendFeet,
+            rightBendFeet,
+          }));
+        }
+
+        const enteredTraverseQty = parseCountValue(row.traverseNumber, 0);
+        const traverseSpacingFeet = parseFeet(row.traverseSpacing || "");
+        const calculatedTraverseQty = !enteredTraverseQty && isBaseBottom && baseStraightFeet > 0 && traverseSpacingFeet > 0
+          ? Math.floor(baseStraightFeet / traverseSpacingFeet) + 1
+          : 0;
+        const traverseQty = enteredTraverseQty || calculatedTraverseQty;
+        const traverseFeet = parseFeet(row.traverseLength || "");
+        schedule.push(...buildManualSimplePieces({
+          mark: `${segment}_D${duplicateIndex + 1}_TRAVERSE`,
+          prefix: `${segment}_D${duplicateIndex + 1}_TRAVERSE`,
+          location: `${row.segment || segment} ${duplicateLabel} traverse bars ${rebarSize}${row.traverseSpacing ? ` @ ${row.traverseSpacing}` : ""}${calculatedTraverseQty ? " (qty calculated from run length / spacing + 1 because Number is N/A)" : ""}`,
+          qty: traverseQty,
+          cutFeet: traverseFeet,
+          leftFunction: "straight traverse start",
+          rightFunction: "straight traverse end",
+        }));
+      }
+      continue;
+    }
+
+    if (normalizedType === "vertical rebar") {
+      const duplicateTimes = parseCountValue(row.duplicateTimes, 1);
+      const spacingFeet = parseFeet(row.verticalSpacingAdjacent || "");
+      const enteredQty = parseCountValue(row.count, 0);
+      const runFeet = parseFeet(row.calcLength || "") || baseBottomTotalRunFeet;
+      const calculatedQty = !enteredQty && isBlankOrNA(row.count) && runFeet > 0 && spacingFeet > 0
+        ? Math.floor(runFeet / spacingFeet) + 1
+        : 0;
+      const qty = enteredQty ? enteredQty * duplicateTimes : calculatedQty;
+      const inferredVertical = inferVerticalStraightFeet(row, params.rows);
+      const straightFeet = inferredVertical.feet;
+      const side1BendFeet = (row.side1Bent || "").toLowerCase() === "yes" ? (parseFeet(row.side1BentLength || "") || defaultBendFeet) : 0;
+      const side2BendFeet = (row.side2Bent || "").toLowerCase() === "yes" ? (parseFeet(row.side2BentLength || "") || defaultBendFeet) : 0;
+      const verticalLocation = `${row.segment || segment} vertical/L bars ${rebarSize}${row.verticalSpacingAdjacent ? ` @ ${row.verticalSpacingAdjacent}` : ""}${calculatedQty ? `, qty calculated from ${formatFeet(runFeet)} total bottom run / spacing + 1` : ""}${enteredQty && duplicateTimes > 1 ? `, duplicated ${duplicateTimes} sides` : ""}${inferredVertical.note}`;
+      if (!qty || !straightFeet) {
+        schedule.push(...buildManualCheckLine({
+          mark: `${segment}_VERT_CHECK`,
+          prefix: `${segment}_VERT`,
+          location: verticalLocation,
+          qty: qty || duplicateTimes,
+          message: `CHECK vertical/L bars: ${!qty ? "enter Count or use N/A with Calculate len/spacing" : ""}${!qty && !straightFeet ? "; " : ""}${!straightFeet ? "enter Bar straight len or pier Length with top/bottom clearances" : ""}.`,
+        }));
+      } else {
+        schedule.push(...buildManualSimplePieces({
+          mark: `${segment}_VERT`,
+          prefix: `${segment}_VERT`,
+          location: verticalLocation,
+          qty,
+          cutFeet: straightFeet + side1BendFeet + side2BendFeet,
+          leftFunction: side1BendFeet > 0 ? `${formatFeet(side1BendFeet)} side 1 bent` : "side 1 straight",
+          rightFunction: side2BendFeet > 0 ? `${formatFeet(side2BendFeet)} side 2 bent` : "side 2 straight",
+        }));
+      }
+      continue;
+    }
+
+    if (isPier) {
+      const pierCount = parseCountValue(row.duplicateTimes, parseCountValue(row.count, 1));
+      const diameterFeet = parseFeet(row.diameter || "");
+      const heightFeet = parseFeet(row.length || "");
+      const topClearanceFeet = isBlankOrNA(row.clearanceTop) ? 0 : parseFeet(row.clearanceTop || "");
+      const bottomClearanceFeet = isBlankOrNA(row.clearanceBottom) ? 0 : parseFeet(row.clearanceBottom || "");
+      const sideClearanceFeet = isBlankOrNA(row.clearanceSides) ? 0 : parseFeet(row.clearanceSides || "");
+      const clearHeightFeet = heightFeet > 0 ? Math.max(heightFeet - topClearanceFeet - bottomClearanceFeet, 0) : 0;
+
+      const enteredHoopCount = parseCountValue(row.horizontalCircleCount, 0);
+      const hoopSpacingFeet = parseFeet(row.spacing || "");
+      const calculatedHoopCount = !enteredHoopCount && isBlankOrNA(row.horizontalCircleCount) && clearHeightFeet > 0 && hoopSpacingFeet > 0
+        ? Math.floor(clearHeightFeet / hoopSpacingFeet) + 1
+        : 0;
+      const hoopCount = enteredHoopCount || calculatedHoopCount;
+
+      const verticalCount = parseCountValue(row.numVerticalBars, 0);
+      const verticalBendFeet = (row.verticalBent || "").toLowerCase() === "yes" ? (parseFeet(row.verticalBentLength || "") || defaultBendFeet) : 0;
+      const hoopDiameterFeet = diameterFeet > 0 ? Math.max(diameterFeet - sideClearanceFeet * 2, 0) : 0;
+      const hoopOverlapFeet = 2 / 12;
+      const hoopCutFeet = hoopDiameterFeet > 0 ? Math.PI * hoopDiameterFeet + hoopOverlapFeet : 0;
+
+      const hoopLocation = `${row.segment || segment} pier H-circles/hoops ${rebarSize}: qty ${hoopCount || "CHECK"} per pier x ${pierCount || "CHECK"} piers; hoop diameter = pier diameter ${row.diameter || "missing"}${sideClearanceFeet ? ` - 2 x side spacing ${row.clearanceSides}` : ""} = ${hoopDiameterFeet ? formatFeet(hoopDiameterFeet) : "CHECK"}; circle cut = circumference plus 2" overlap${row.spacing ? `; vertical spacing ${row.spacing}` : ""}${calculatedHoopCount ? `; H-circle qty calculated from clear height ${formatFeet(clearHeightFeet)} / spacing + 1` : ""}`;
+      if (!pierCount || !hoopCount || !hoopCutFeet) {
+        schedule.push(...buildManualCheckLine({
+          mark: `${segment}_PIER_HCIRC_CHECK`,
+          prefix: `${segment}_PIER_HCIRC`,
+          location: hoopLocation,
+          qty: Math.max((pierCount || 1) * (hoopCount || 1), 1),
+          message: `CHECK pier H-circles: enter Number of piers, Diameter, side clearance, and Number of H-Circles or N/A with Length + top/bottom clearance + spacing.`,
+        }));
+      } else {
+        schedule.push(...buildManualSimplePieces({
+          mark: `${segment}_PIER_HCIRC`,
+          prefix: `${segment}_PIER_HCIRC`,
+          location: hoopLocation,
+          qty: pierCount * hoopCount,
+          cutFeet: hoopCutFeet,
+          leftFunction: `circle dia ${formatFeet(hoopDiameterFeet)}`,
+          rightFunction: `${formatFeet(hoopOverlapFeet)} hoop overlap`,
+        }));
+      }
+
+      const pierVertLocation = `${row.segment || segment} pier vertical L bars ${rebarSize}: ${verticalCount || "CHECK"} vertical bars per pier x ${pierCount || "CHECK"} piers; straight = pier len ${row.length || "missing"}${heightFeet ? ` - top/bottom clearance ${formatFeet(topClearanceFeet + bottomClearanceFeet)} = ${formatFeet(clearHeightFeet)}` : ""}${verticalBendFeet ? ` + ${formatFeet(verticalBendFeet)} bent` : ""}`;
+      if (!pierCount || !verticalCount || !clearHeightFeet) {
+        schedule.push(...buildManualCheckLine({
+          mark: `${segment}_PIER_VERT_CHECK`,
+          prefix: `${segment}_PIER_VERT`,
+          location: pierVertLocation,
+          qty: Math.max((pierCount || 1) * (verticalCount || 1), 1),
+          message: `CHECK pier verticals: enter Number of piers, Length, top/bottom clearances, and Vertical bars count.`,
+        }));
+      } else {
+        schedule.push(...buildManualSimplePieces({
+          mark: `${segment}_PIER_VERT`,
+          prefix: `${segment}_PIER_VERT`,
+          location: pierVertLocation,
+          qty: pierCount * verticalCount,
+          cutFeet: clearHeightFeet + verticalBendFeet,
+          leftFunction: verticalBendFeet > 0 ? `${formatFeet(verticalBendFeet)} bottom bent` : "bottom straight",
+          rightFunction: `straight ${formatFeet(clearHeightFeet)} after clearances`,
+        }));
+      }
+      continue;
+    }
+
+    const qty = parseCountValue(row.count, parseCountValue(row.number, 0));
+    const cutFeet = parseFeet(row.length || "");
+    schedule.push(...buildManualSimplePieces({
+      mark: `${segment}_MISC`,
+      prefix: `${segment}_MISC`,
+      location: `${row.segment || segment} misc ${rebarSize}`,
+      qty,
+      cutFeet,
+      leftFunction: "start",
+      rightFunction: "end",
+    }));
+  }
 
   return {
     schedule,

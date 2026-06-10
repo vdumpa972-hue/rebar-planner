@@ -6,6 +6,7 @@ import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import {
   formatFeet,
   generateRebarSchedule,
+  generateManualRebarSchedule,
   parseFeet,
   type MaterialTakeoff,
   type ScheduleLine,
@@ -22,8 +23,9 @@ import {
 } from "@/lib/planRecognition";
 import { calculatedFieldKeys, fieldHelp, initialFields } from "@/lib/sharedRebarParameters";
 import { useAuth } from "@/contexts/AuthContext";
-import { db } from "@/lib/firebase";
-import { doc, getDoc, serverTimestamp, setDoc } from "firebase/firestore";
+import { db, storage } from "@/lib/firebase";
+import { collection, deleteDoc, doc, getDoc, getDocs, orderBy, query, serverTimestamp, setDoc } from "firebase/firestore";
+import { getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage";
 
 type ExtractedField = {
   key: string;
@@ -31,7 +33,19 @@ type ExtractedField = {
   value: string;
 };
 
-type RebarInfoType = "Footing" | "Wall" | "Pier" | "Misc";
+type RebarInfoType = "Base/Bottom rebar" | "Horiz continues longtidues" | "Vertical Rebar" | "Pier" | "Misc";
+
+type PlanCropRef = {
+  id: string;
+  label: string;
+  elementType: RebarInfoType;
+  pageNumber: number;
+  note: string;
+  imageDataUrl?: string;
+  storagePath?: string;
+  downloadUrl?: string;
+  createdAtIso: string;
+};
 
 type RebarInfoRow = {
   id: string;
@@ -45,8 +59,28 @@ type RebarInfoRow = {
   numVerticalBars: string;
   verticalBent: "" | "Yes" | "No";
   verticalBentLength: string;
-  cropImage: string;
+  cropImage: string; // legacy single-crop field
+  cropImages: string[];
+  count: string;
+  number: string;
+  spacingBetween: string;
+  spacing: string;
+  side1Bent: "" | "Yes" | "No";
+  side1TurnAngle: string;
+  side1BentLength: string;
+  side2Bent: "" | "Yes" | "No";
+  side2TurnAngle: string;
+  side2BentLength: string;
+  traverseNumber: string;
+  traverseSpacing: string;
+  traverseLength: string;
+  clearanceTop: string;
+  clearanceBottom: string;
+  clearanceSides: string;
+  verticalSpacingAdjacent: string;
   rebarSize: string;
+  duplicateTimes: string;
+  calcLength: string;
   note: string;
 };
 
@@ -58,11 +92,71 @@ type RebarGlobalParams = {
   pierRebarSize: string;
 };
 
+type FoundationRebarConfig = {
+  baseLongitudinalCount: string;
+  baseLongitudinalSpacing: string;
+  baseSide1Bent: "" | "Yes" | "No";
+  baseSide1TurnAngle: string;
+  baseSide1BentLength: string;
+  baseSide2Bent: "" | "Yes" | "No";
+  baseSide2TurnAngle: string;
+  baseSide2BentLength: string;
+  baseTraverseLength: string;
+  horizontalBarSpacing: string;
+  horizontalSide1Bent: "" | "Yes" | "No";
+  horizontalSide1TurnAngle: string;
+  horizontalSide1BentLength: string;
+  horizontalSide2Bent: "" | "Yes" | "No";
+  horizontalSide2TurnAngle: string;
+  horizontalSide2BentLength: string;
+  verticalSide1Bent: "" | "Yes" | "No";
+  verticalSide1TurnAngle: string;
+  verticalSide1BentLength: string;
+  verticalSide2Bent: "" | "Yes" | "No";
+  verticalSide2TurnAngle: string;
+  verticalSide2BentLength: string;
+};
+
+const defaultFoundationRebarConfig: FoundationRebarConfig = {
+  baseLongitudinalCount: "3",
+  baseLongitudinalSpacing: "",
+  baseSide1Bent: "",
+  baseSide1TurnAngle: "",
+  baseSide1BentLength: "",
+  baseSide2Bent: "",
+  baseSide2TurnAngle: "",
+  baseSide2BentLength: "",
+  baseTraverseLength: "",
+  horizontalBarSpacing: "",
+  horizontalSide1Bent: "",
+  horizontalSide1TurnAngle: "",
+  horizontalSide1BentLength: "",
+  horizontalSide2Bent: "",
+  horizontalSide2TurnAngle: "",
+  horizontalSide2BentLength: "",
+  verticalSide1Bent: "",
+  verticalSide1TurnAngle: "",
+  verticalSide1BentLength: "",
+  verticalSide2Bent: "",
+  verticalSide2TurnAngle: "",
+  verticalSide2BentLength: "",
+};
+
+type SavedGeneratedSchedule = {
+  generatedAtIso: string;
+  sourceLabel: string;
+  schedule: ScheduleLine[];
+  summary: SummaryLine[];
+  materialTakeoff: MaterialTakeoff;
+};
+
 type PlannerWorkspace = {
   projectName: string;
   planFileName: string;
   planFileType: string;
   planFileSize: number;
+  planStoragePath?: string;
+  planDownloadUrl?: string;
   extractionMode: ExtractionMode;
   horizontalLap: string;
   verticalBentLap: string;
@@ -71,7 +165,19 @@ type PlannerWorkspace = {
   fieldSources: Record<string, FieldSource>;
   pierMode: "unknown" | "yes" | "none";
   rebarGlobalParams?: RebarGlobalParams;
+  foundationRebarConfig?: FoundationRebarConfig;
   rebarInfoRows?: RebarInfoRow[];
+  cropRefs?: PlanCropRef[];
+  savedGeneratedSchedule?: SavedGeneratedSchedule | null;
+};
+
+type SavedPlannerProject = {
+  id: string;
+  projectName: string;
+  planFileName: string;
+  updatedAtLabel: string;
+  cropCount: number;
+  rowCount: number;
 };
 
 type ExtractionMode = "live" | "simulation";
@@ -317,13 +423,21 @@ function getFieldSourceStyle(source: FieldSource) {
 }
 
 
-const rebarInfoTypes: RebarInfoType[] = ["Footing", "Wall", "Pier", "Misc"];
+const rebarInfoTypes: RebarInfoType[] = ["Base/Bottom rebar", "Horiz continues longtidues", "Vertical Rebar", "Pier", "Misc"];
 
-function createRebarInfoRow(itemType: RebarInfoType = "Footing", index = 1): RebarInfoRow {
+function rebarSegmentPrefix(itemType: RebarInfoType) {
+  if (itemType === "Base/Bottom rebar") return "BaseBottom";
+  if (itemType === "Horiz continues longtidues") return "Horiz";
+  if (itemType === "Vertical Rebar") return "Vertical";
+  if (itemType === "Pier") return "Pier";
+  return "Misc";
+}
+
+function createRebarInfoRow(itemType: RebarInfoType = "Base/Bottom rebar", index = 1): RebarInfoRow {
   return {
     id: crypto.randomUUID(),
     itemType,
-    segment: `${itemType}${index}`,
+    segment: `${rebarSegmentPrefix(itemType)}${index}`,
     length: "",
     turn: "",
     bentLength: "",
@@ -333,14 +447,33 @@ function createRebarInfoRow(itemType: RebarInfoType = "Footing", index = 1): Reb
     verticalBent: "",
     verticalBentLength: "",
     cropImage: "",
+    cropImages: [],
+    count: itemType === "Vertical Rebar" ? "N/A" : "1",
+    number: itemType === "Horiz continues longtidues" ? "1" : itemType === "Base/Bottom rebar" ? "N/A" : "",
+    spacingBetween: itemType === "Horiz continues longtidues" ? "0" : "",
+    spacing: "",
+    side1Bent: "",
+    side1TurnAngle: "",
+    side1BentLength: "",
+    side2Bent: "",
+    side2TurnAngle: "",
+    side2BentLength: "",
+    traverseNumber: itemType === "Base/Bottom rebar" ? "N/A" : "",
+    traverseSpacing: "",
+    traverseLength: "",
+    clearanceTop: itemType === "Base/Bottom rebar" ? `3"` : "",
+    clearanceBottom: itemType === "Base/Bottom rebar" ? `3"` : "",
+    clearanceSides: itemType === "Base/Bottom rebar" ? `3"` : "",
+    verticalSpacingAdjacent: "",
     rebarSize: "",
+    duplicateTimes: itemType === "Pier" || itemType === "Misc" ? "1" : "2",
+    calcLength: "",
     note: "",
   };
 }
-
 function nextRebarSegment(rows: RebarInfoRow[], itemType: RebarInfoType) {
   const count = rows.filter((row) => row.itemType === itemType).length + 1;
-  return `${itemType}${count}`;
+  return `${rebarSegmentPrefix(itemType)}${count}`;
 }
 
 function makeTooltip(field: ExtractedField, source: FieldSource) {
@@ -365,10 +498,14 @@ export default function Home() {
   const [authRole, setAuthRole] = useState("user");
   const [workspaceStatus, setWorkspaceStatus] = useState("");
   const [workspaceLoaded, setWorkspaceLoaded] = useState(false);
+  const [currentProjectId, setCurrentProjectId] = useState("");
+  const [savedProjects, setSavedProjects] = useState<SavedPlannerProject[]>([]);
   const [projectName, setProjectName] = useState("ADU Foundation");
   const [planFileName, setPlanFileName] = useState("");
   const [planFileType, setPlanFileType] = useState("");
   const [planFileSize, setPlanFileSize] = useState(0);
+  const [planStoragePath, setPlanStoragePath] = useState("");
+  const [planDownloadUrl, setPlanDownloadUrl] = useState("");
   const [planPreviewUrl, setPlanPreviewUrl] = useState("");
   const [planFile, setPlanFile] = useState<File | null>(null);
   const [extractionStatus, setExtractionStatus] = useState("");
@@ -391,7 +528,19 @@ export default function Home() {
     foundationRebarSize: "#4",
     pierRebarSize: "#4",
   });
-  const [rebarInfoRows, setRebarInfoRows] = useState<RebarInfoRow[]>(() => [createRebarInfoRow("Footing", 1)]);
+  const [foundationRebarConfig, setFoundationRebarConfig] = useState<FoundationRebarConfig>(defaultFoundationRebarConfig);
+  const [rebarInfoRows, setRebarInfoRows] = useState<RebarInfoRow[]>(() => [createRebarInfoRow("Base/Bottom rebar", 1)]);
+  const [manualComparisonFields, setManualComparisonFields] = useState<ExtractedField[]>(initialFields);
+  const [manualComparisonRows, setManualComparisonRows] = useState<RebarInfoRow[]>([]);
+  const [manualComparisonGlobals, setManualComparisonGlobals] = useState<RebarGlobalParams | null>(null);
+  const [calculatedFields, setCalculatedFields] = useState<ExtractedField[]>([]);
+  const [calculatedRows, setCalculatedRows] = useState<RebarInfoRow[]>([]);
+  const [calculatedGlobals, setCalculatedGlobals] = useState<RebarGlobalParams | null>(null);
+  const [calculatedAt, setCalculatedAt] = useState("");
+  const [showParamComparison, setShowParamComparison] = useState(false);
+  const [paramViewMode, setParamViewMode] = useState<"manual" | "calculated">("manual");
+  const [isExtractingPlan, setIsExtractingPlan] = useState(false);
+  const [extractionProgress, setExtractionProgress] = useState("");
   const [fields, setFields] = useState<ExtractedField[]>(initialFields);
   const [fieldSources, setFieldSources] = useState<Record<string, FieldSource>>(
     getInitialFieldSources(),
@@ -400,6 +549,9 @@ export default function Home() {
   const [summary, setSummary] = useState<SummaryLine[]>([]);
   const [materialTakeoff, setMaterialTakeoff] =
     useState<MaterialTakeoff | null>(null);
+  const [isGeneratingSchedule, setIsGeneratingSchedule] = useState(false);
+  const [scheduleGenerationStatus, setScheduleGenerationStatus] = useState("");
+  const [savedScheduleAt, setSavedScheduleAt] = useState("");
   const [selectedMark, setSelectedMark] = useState("");
   const [selectedPrefix, setSelectedPrefix] = useState("");
   const [filter, setFilter] = useState("ALL");
@@ -410,12 +562,21 @@ export default function Home() {
   const [pierMessage, setPierMessage] = useState("");
   const regionCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const regionBaseImageRef = useRef<ImageData | null>(null);
+  const cropToolRef = useRef<HTMLDivElement | null>(null);
   const [regionPageNumber, setRegionPageNumber] = useState("4");
   const [regionRect, setRegionRect] = useState<RegionRect | null>(null);
   const [regionDragStart, setRegionDragStart] = useState<{ x: number; y: number } | null>(null);
   const [regionStatus, setRegionStatus] = useState("");
   const [regionAnalysis, setRegionAnalysis] = useState<RegionAnalysis | null>(null);
   const [regionZoom, setRegionZoom] = useState(1);
+  const [cropToolOpen, setCropToolOpen] = useState(false);
+  const [cropRefs, setCropRefs] = useState<PlanCropRef[]>([]);
+  const [cropElementType, setCropElementType] = useState<RebarInfoType>("Base/Bottom rebar");
+  const [cropLabel, setCropLabel] = useState("Footing crop");
+  const [cropNote, setCropNote] = useState("");
+  const [openCropDropdownRowId, setOpenCropDropdownRowId] = useState("");
+  const [plannerView, setPlannerView] = useState<"advanced" | "simple">("advanced");
+  const [pdfZoom, setPdfZoom] = useState(100);
 
 
   const workspaceDocId = user?.uid || "";
@@ -426,6 +587,8 @@ export default function Home() {
       planFileName,
       planFileType,
       planFileSize,
+      planStoragePath,
+      planDownloadUrl,
       extractionMode,
       horizontalLap,
       verticalBentLap,
@@ -434,7 +597,16 @@ export default function Home() {
       fieldSources,
       pierMode,
       rebarGlobalParams,
+      foundationRebarConfig,
       rebarInfoRows,
+      cropRefs,
+      savedGeneratedSchedule: schedule.length && materialTakeoff ? {
+        generatedAtIso: savedScheduleAt || new Date().toISOString(),
+        sourceLabel: showingCalculatedParams && calculatedRows.length > 0 ? "calculated PDF parameters" : "manual parameters",
+        schedule,
+        summary,
+        materialTakeoff,
+      } : null,
     };
   }
 
@@ -443,6 +615,11 @@ export default function Home() {
     if (typeof data.planFileName === "string") setPlanFileName(data.planFileName);
     if (typeof data.planFileType === "string") setPlanFileType(data.planFileType);
     if (typeof data.planFileSize === "number") setPlanFileSize(data.planFileSize);
+    if (typeof data.planStoragePath === "string") setPlanStoragePath(data.planStoragePath);
+    if (typeof data.planDownloadUrl === "string") {
+      setPlanDownloadUrl(data.planDownloadUrl);
+      if (data.planDownloadUrl) setPlanPreviewUrl(data.planDownloadUrl);
+    }
     if (data.extractionMode === "live" || data.extractionMode === "simulation") setExtractionMode(data.extractionMode);
     if (typeof data.horizontalLap === "string") setHorizontalLap(data.horizontalLap);
     if (typeof data.verticalBentLap === "string") setVerticalBentLap(data.verticalBentLap);
@@ -453,12 +630,52 @@ export default function Home() {
     if (data.rebarGlobalParams && typeof data.rebarGlobalParams === "object") {
       setRebarGlobalParams((current) => ({ ...current, ...data.rebarGlobalParams }));
     }
+    if (data.foundationRebarConfig && typeof data.foundationRebarConfig === "object") {
+      setFoundationRebarConfig((current) => ({ ...current, ...data.foundationRebarConfig }));
+    }
     if (Array.isArray(data.rebarInfoRows) && data.rebarInfoRows.length) {
       setRebarInfoRows(data.rebarInfoRows.map((row, index) => ({
-        ...createRebarInfoRow(row.itemType || "Footing", index + 1),
+        ...createRebarInfoRow((rebarInfoTypes.includes(row.itemType as RebarInfoType) ? row.itemType as RebarInfoType : "Base/Bottom rebar"), index + 1),
         ...row,
-        itemType: rebarInfoTypes.includes(row.itemType) ? row.itemType : "Footing",
+        itemType: rebarInfoTypes.includes(row.itemType as RebarInfoType) ? row.itemType as RebarInfoType : "Base/Bottom rebar",
+        cropImages: Array.isArray(row.cropImages) ? row.cropImages : (row.cropImage ? [row.cropImage] : []),
+        count: (row.count && row.count.trim()) ? row.count : ((row.itemType === "Vertical Rebar") ? "N/A" : "1"),
+        number: row.number || ((row.itemType === "Horiz continues longtidues") ? "1" : (row.itemType === "Base/Bottom rebar" ? "N/A" : "")),
+        spacingBetween: row.spacingBetween ?? "",
+        spacing: row.spacing ?? "",
+        side1Bent: row.side1Bent || "",
+        side1TurnAngle: row.side1TurnAngle || "",
+        side1BentLength: row.side1BentLength || "",
+        side2Bent: row.side2Bent || "",
+        side2TurnAngle: row.side2TurnAngle || "",
+        side2BentLength: row.side2BentLength || "",
+        traverseNumber: row.traverseNumber || "",
+        traverseSpacing: row.traverseSpacing || "",
+        traverseLength: row.traverseLength || "",
+        clearanceTop: row.clearanceTop || `3"`,
+        clearanceBottom: row.clearanceBottom || `3"`,
+        clearanceSides: row.clearanceSides || `3"`,
+        verticalSpacingAdjacent: row.verticalSpacingAdjacent || "",
       })));
+    }
+    if (data.savedGeneratedSchedule && Array.isArray(data.savedGeneratedSchedule.schedule)) {
+      setSchedule(data.savedGeneratedSchedule.schedule);
+      setSummary(Array.isArray(data.savedGeneratedSchedule.summary) ? data.savedGeneratedSchedule.summary : []);
+      setMaterialTakeoff(data.savedGeneratedSchedule.materialTakeoff || null);
+      setSavedScheduleAt(data.savedGeneratedSchedule.generatedAtIso || "");
+      setSelectedMark(data.savedGeneratedSchedule.schedule[0]?.mark || "");
+      setSelectedPrefix(data.savedGeneratedSchedule.schedule[0]?.prefix || "");
+      setScheduleGenerationStatus(`Saved schedule loaded${data.savedGeneratedSchedule.generatedAtIso ? ` from ${new Date(data.savedGeneratedSchedule.generatedAtIso).toLocaleString()}` : ""}. Click Generate Rebar Schedule to recalculate.`);
+    } else {
+      setSchedule([]);
+      setSummary([]);
+      setMaterialTakeoff(null);
+      setSavedScheduleAt("");
+    }
+    if (Array.isArray(data.cropRefs)) {
+      setCropRefs(data.cropRefs
+        .filter((crop) => crop && typeof crop.id === "string")
+        .map((crop) => ({ ...crop, imageDataUrl: crop.imageDataUrl || crop.downloadUrl || "" })));
     }
   }
 
@@ -480,25 +697,210 @@ export default function Home() {
     }
   }
 
+
+  function dataUrlToBlob(dataUrl: string): Blob {
+    const [header, data] = dataUrl.split(",");
+    const mime = header.match(/data:(.*?);base64/)?.[1] || "image/png";
+    const binary = atob(data || "");
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+    return new Blob([bytes], { type: mime });
+  }
+
+  function safeFileName(name: string) {
+    return (name || "file").replace(/[^a-zA-Z0-9._-]+/g, "_").slice(0, 120);
+  }
+
+  async function uploadPlanAssets(projectId: string, snapshot: PlannerWorkspace): Promise<PlannerWorkspace> {
+    let nextPlanStoragePath = snapshot.planStoragePath || planStoragePath;
+    let nextPlanDownloadUrl = snapshot.planDownloadUrl || planDownloadUrl;
+
+    if (planFile) {
+      nextPlanStoragePath = `plannerProjects/${projectId}/source/${Date.now()}-${safeFileName(planFile.name)}`;
+      const fileRef = storageRef(storage, nextPlanStoragePath);
+      await uploadBytes(fileRef, planFile, { contentType: planFile.type || "application/pdf" });
+      nextPlanDownloadUrl = await getDownloadURL(fileRef);
+      setPlanStoragePath(nextPlanStoragePath);
+      setPlanDownloadUrl(nextPlanDownloadUrl);
+      setPlanPreviewUrl(nextPlanDownloadUrl);
+    }
+
+    const uploadedCrops: PlanCropRef[] = [];
+    for (const crop of snapshot.cropRefs || []) {
+      let storagePath = crop.storagePath || "";
+      let downloadUrl = crop.downloadUrl || "";
+      if ((!storagePath || !downloadUrl) && crop.imageDataUrl?.startsWith("data:")) {
+        storagePath = `plannerProjects/${projectId}/crops/${crop.id}.png`;
+        const cropRef = storageRef(storage, storagePath);
+        await uploadBytes(cropRef, dataUrlToBlob(crop.imageDataUrl), { contentType: "image/png" });
+        downloadUrl = await getDownloadURL(cropRef);
+      }
+      uploadedCrops.push({
+        ...crop,
+        storagePath,
+        downloadUrl,
+        imageDataUrl: downloadUrl || crop.imageDataUrl || "",
+      });
+    }
+    setCropRefs(uploadedCrops);
+
+    return {
+      ...snapshot,
+      planStoragePath: nextPlanStoragePath,
+      planDownloadUrl: nextPlanDownloadUrl,
+      cropRefs: uploadedCrops.map(({ imageDataUrl, ...crop }) => ({ ...crop, imageDataUrl: "" })),
+    };
+  }
+
   async function saveWorkspace() {
     if (!user || !workspaceDocId) {
       setWorkspaceStatus("Login required before saving.");
       return;
     }
-    setWorkspaceStatus("Saving workspace...");
+    setWorkspaceStatus("Saving project files to Storage...");
     try {
+      const projectId = currentProjectId || `${user.uid}-${Date.now()}`;
+      const cleanProjectName = projectName.trim();
+      if (!cleanProjectName) {
+        setWorkspaceStatus("Save failed: project name is required.");
+        return;
+      }
+      const existingSnaps = await getDocs(query(collection(db, "plannerProjects"), orderBy("updatedAt", "desc")));
+      const duplicateProject = existingSnaps.docs
+        .map((projectSnap) => ({ id: projectSnap.id, ...(projectSnap.data() as Partial<PlannerWorkspace> & { ownerUid?: string }) }))
+        .find((project) => project.ownerUid === user.uid && project.id !== projectId && (project.projectName || "").trim().toLowerCase() === cleanProjectName.toLowerCase());
+      if (duplicateProject) {
+        setWorkspaceStatus(`Save blocked: another project already uses the name "${cleanProjectName}". Rename this project or delete the duplicate first.`);
+        return;
+      }
+      const snapshot = await uploadPlanAssets(projectId, { ...getWorkspaceSnapshot(), projectName: cleanProjectName });
+      const projectPayload = {
+        ...snapshot,
+        id: projectId,
+        ownerUid: user.uid,
+        ownerEmail: user.email || "",
+        app: "rebar-planner",
+        updatedAt: serverTimestamp(),
+        ...(currentProjectId ? {} : { createdAt: serverTimestamp() }),
+      };
+
+      await setDoc(doc(db, "plannerProjects", projectId), projectPayload, { merge: true });
       await setDoc(doc(db, "plannerWorkspaces", workspaceDocId), {
-        ...getWorkspaceSnapshot(),
+        ...snapshot,
+        activeProjectId: projectId,
         ownerUid: user.uid,
         ownerEmail: user.email || "",
         app: "rebar-planner",
         updatedAt: serverTimestamp(),
         createdAt: serverTimestamp(),
       }, { merge: true });
-      setWorkspaceStatus("Workspace saved to Firestore.");
+
+      setCurrentProjectId(projectId);
+      setWorkspaceStatus("Project saved. PDF/crops are in Storage; metadata is in Firestore.");
+      await loadSavedProjects(user.uid);
     } catch (error) {
       setWorkspaceStatus(error instanceof Error ? `Save failed: ${error.message}` : "Save failed.");
     }
+  }
+
+  async function loadSavedProjects(ownerUid = user?.uid || "") {
+    if (!ownerUid) return;
+    try {
+      const snaps = await getDocs(query(collection(db, "plannerProjects"), orderBy("updatedAt", "desc")));
+      const rows = snaps.docs
+        .map((projectSnap) => ({ id: projectSnap.id, ...(projectSnap.data() as Partial<PlannerWorkspace> & { ownerUid?: string; updatedAt?: { toDate?: () => Date } }) }))
+        .filter((project) => project.ownerUid === ownerUid)
+        .map((project) => ({
+          id: project.id,
+          projectName: project.projectName || "Untitled project",
+          planFileName: project.planFileName || "No plan file saved",
+          updatedAtLabel: project.updatedAt?.toDate ? project.updatedAt.toDate().toLocaleString() : "",
+          cropCount: Array.isArray(project.cropRefs) ? project.cropRefs.length : 0,
+          rowCount: Array.isArray(project.rebarInfoRows) ? project.rebarInfoRows.length : 0,
+        }));
+      setSavedProjects(rows);
+    } catch (error) {
+      setWorkspaceStatus(error instanceof Error ? `Could not load project list: ${error.message}` : "Could not load project list.");
+    }
+  }
+
+
+  async function deleteProject(projectId: string, name: string) {
+    if (!user || !projectId) return;
+    const ok = window.confirm(`Delete project "${name}"? This removes the Firestore project record. Storage files may remain as backup.`);
+    if (!ok) return;
+    try {
+      await deleteDoc(doc(db, "plannerProjects", projectId));
+      if (currentProjectId === projectId) {
+        startNewProject();
+      }
+      setWorkspaceStatus(`Project "${name}" deleted.`);
+      await loadSavedProjects(user.uid);
+    } catch (error) {
+      setWorkspaceStatus(error instanceof Error ? `Delete failed: ${error.message}` : "Delete failed.");
+    }
+  }
+
+
+  async function restorePlanFileFromStorage(data: Partial<PlannerWorkspace>) {
+    if (!data.planDownloadUrl) return;
+    try {
+      const response = await fetch(data.planDownloadUrl);
+      if (!response.ok) return;
+      const blob = await response.blob();
+      const fileName = data.planFileName || "stored-plan.pdf";
+      const fileType = data.planFileType || blob.type || "application/pdf";
+      const restoredFile = new File([blob], fileName, { type: fileType });
+      setPlanFile(restoredFile);
+      setPlanFileSize(data.planFileSize || blob.size);
+      setPlanFileType(fileType);
+      setPlanFileName(fileName);
+      setPlanPreviewUrl(data.planDownloadUrl);
+    } catch {
+      // Preview can still use the download URL even if the File object cannot be rebuilt.
+      setPlanPreviewUrl(data.planDownloadUrl);
+    }
+  }
+
+  async function loadProject(projectId: string) {
+    if (!projectId) return;
+    setWorkspaceStatus("Loading project...");
+    try {
+      const snap = await getDoc(doc(db, "plannerProjects", projectId));
+      if (!snap.exists()) {
+        setWorkspaceStatus("Project not found.");
+        return;
+      }
+      const data = snap.data() as Partial<PlannerWorkspace>;
+      applyWorkspaceSnapshot(data);
+      await restorePlanFileFromStorage(data);
+      setCurrentProjectId(projectId);
+      setWorkspaceStatus("Project loaded from Firestore/Storage. You can edit and re-run extraction.");
+    } catch (error) {
+      setWorkspaceStatus(error instanceof Error ? `Could not load project: ${error.message}` : "Could not load project.");
+    }
+  }
+
+  function startNewProject() {
+    setCurrentProjectId("");
+    setProjectName("ADU Foundation");
+    setPlanFileName("");
+    setPlanFileType("");
+    setPlanFileSize(0);
+    setPlanStoragePath("");
+    setPlanDownloadUrl("");
+    setPlanFile(null);
+    if (planPreviewUrl) URL.revokeObjectURL(planPreviewUrl);
+    setPlanPreviewUrl("");
+    setCropRefs([]);
+    setRebarInfoRows([createRebarInfoRow("Base/Bottom rebar", 1)]);
+    setFields(initialFields);
+    setFieldSources(getInitialFieldSources());
+    setSchedule([]);
+    setSummary([]);
+    setMaterialTakeoff(null);
+    setSavedScheduleAt("");
+    setWorkspaceStatus("New project started. Save when ready.");
   }
 
   useEffect(() => {
@@ -516,6 +918,7 @@ export default function Home() {
     }
     loadUserRole().catch(() => setAuthRole("user"));
     if (!workspaceLoaded) loadWorkspace();
+    loadSavedProjects(currentUser.uid);
     return () => { cancelled = true; };
   }, [loading, router, user, workspaceLoaded]);
 
@@ -558,20 +961,21 @@ export default function Home() {
   }
 
   const groupedFilteredSchedule = useMemo(() => {
-    const order = ["Side Wall Rebar", "End Wall Rebar", "Pier Rebar", "Footing Tie Bars", "Other Rebar"];
-    const groups = new Map<string, ScheduleLine[]>();
+    return filteredSchedule.length
+      ? [{ title: "All Rebar Pieces", lines: filteredSchedule }]
+      : [];
+  }, [filteredSchedule]);
 
-    for (const line of filteredSchedule) {
-      const title = getScheduleGroupTitle(line);
-      const current = groups.get(title) || [];
-      current.push(line);
-      groups.set(title, current);
+  useEffect(() => {
+    function closeCropDropdownOnOutsideClick(event: PointerEvent) {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest("[data-crop-dropdown]")) return;
+      setOpenCropDropdownRowId("");
     }
 
-    return order
-      .filter((title) => groups.has(title))
-      .map((title) => ({ title, lines: groups.get(title) || [] }));
-  }, [filteredSchedule]);
+    document.addEventListener("pointerdown", closeCropDropdownOnOutsideClick);
+    return () => document.removeEventListener("pointerdown", closeCropDropdownOnOutsideClick);
+  }, []);
 
   if (loading || !user) {
     return <main className="min-h-screen bg-gray-100 p-6">Loading Rebar Planner...</main>;
@@ -612,6 +1016,102 @@ export default function Home() {
 
 
 
+
+  function cropDisplayName(crop: PlanCropRef) {
+    const label = crop.label?.trim();
+    const base = label || `${crop.elementType} crop`;
+    return `${base} - page ${crop.pageNumber}`;
+  }
+
+  function cropImageUrl(crop: PlanCropRef) {
+    return crop.imageDataUrl || crop.downloadUrl || "";
+  }
+
+  function selectedCropSummary(row: RebarInfoRow) {
+    const selectedIds = row.cropImages?.length ? row.cropImages : (row.cropImage ? [row.cropImage] : []);
+    if (!selectedIds.length) return "No crops selected";
+    const names = selectedIds
+      .map((id) => cropRefs.find((crop) => crop.id === id))
+      .filter((crop): crop is PlanCropRef => Boolean(crop))
+      .map((crop) => cropDisplayName(crop));
+    if (!names.length) return `${selectedIds.length} crop${selectedIds.length === 1 ? "" : "s"} selected`;
+    if (names.length <= 2) return names.join(", ");
+    return `${names[0]}, ${names[1]} + ${names.length - 2} more`;
+  }
+
+  function rebarInfoGuideline(row: RebarInfoRow) {
+    if (row.itemType === "Base/Bottom rebar") {
+      return "Base/bottom mat rule: this row describes one side/configuration of the foundation. Duplicate times means how many sides use this same configuration, usually 2. Calculate each longitudinal bar by its position in the mat. The outer bar uses the full entered part length. Each inner bar is shortened by the space between longitudinal bars at every bent end/corner, so the bend lands in the correct place. Traverse bars are also scheduled from this row; if traverse Number is N/A, the app estimates quantity from the longitudinal length and traverse spacing. When a run is longer than the stock stick length, split it into multiple sticks and add the required overlap/lap splice.";
+    }
+    if (row.itemType === "Horiz continues longtidues") {
+      return "Horizontal continuous bars: use the entered length, count, spacing, end bends, stock stick length, and required overlap/lap splice when splitting long runs.";
+    }
+    if (row.itemType === "Vertical Rebar") {
+      return "Vertical/L bars: enter Count manually, or enter N/A and the app calculates quantity from Calculate len / total run divided by spacing + 1. If Calculate len is blank, the app uses total base/bottom run length, for example 52' x 2 + 13'-4\" x 2. Enter Bar straight len for the straight vertical part, and Side 1/Side 2 bend lengths for the L bend legs.";
+    }
+    if (row.itemType === "Pier") {
+      return "Pier bars: Number of piers multiplies the whole pier cage. H-circle/hoop diameter = pier diameter minus side clearance on both sides. H-circle count can be entered, or set to N/A so the app calculates from clear vertical height: pier length minus top clearance minus bottom clearance, divided by H-circle spacing + 1. Pier vertical L bar straight length = pier length minus top/bottom clearance, then add the vertical bent length when Vertical bent is Yes.";
+    }
+    return "Misc row: use the entered quantity, length, rebar size, and note for special field instructions.";
+  }
+
+  const pdfViewerUrl = planPreviewUrl ? `${planPreviewUrl}${planPreviewUrl.includes("#") ? "&" : "#"}zoom=${pdfZoom}` : "";
+
+  function saveSelectedCrop() {
+    const sourceCanvas = regionCanvasRef.current;
+    const baseImage = regionBaseImageRef.current;
+    if (!sourceCanvas || !baseImage || !regionRect || regionRect.width < 5 || regionRect.height < 5) {
+      setRegionStatus("Render a PDF page and drag a crop rectangle first.");
+      return;
+    }
+
+    const sx = Math.max(0, Math.floor(regionRect.x));
+    const sy = Math.max(0, Math.floor(regionRect.y));
+    const sw = Math.max(1, Math.min(sourceCanvas.width - sx, Math.floor(regionRect.width)));
+    const sh = Math.max(1, Math.min(sourceCanvas.height - sy, Math.floor(regionRect.height)));
+
+    const cleanCanvas = document.createElement("canvas");
+    cleanCanvas.width = sourceCanvas.width;
+    cleanCanvas.height = sourceCanvas.height;
+    const cleanCtx = cleanCanvas.getContext("2d");
+    if (!cleanCtx) {
+      setRegionStatus("Could not create crop canvas.");
+      return;
+    }
+    cleanCtx.putImageData(baseImage, 0, 0);
+
+    const cropCanvas = document.createElement("canvas");
+    cropCanvas.width = sw;
+    cropCanvas.height = sh;
+    const cropCtx = cropCanvas.getContext("2d");
+    if (!cropCtx) {
+      setRegionStatus("Could not create crop canvas.");
+      return;
+    }
+    cropCtx.drawImage(cleanCanvas, sx, sy, sw, sh, 0, 0, sw, sh);
+
+    const id = crypto.randomUUID();
+    const label = cropLabel.trim() || `${cropElementType} crop`;
+    const newCrop: PlanCropRef = {
+      id,
+      label,
+      elementType: cropElementType,
+      pageNumber: Math.max(1, Number(regionPageNumber) || 1),
+      note: cropNote,
+      imageDataUrl: cropCanvas.toDataURL("image/png"),
+      createdAtIso: new Date().toISOString(),
+    };
+    setCropRefs((current) => [newCrop, ...current]);
+    setCropLabel(`${cropElementType} crop`);
+    setCropNote("");
+    setRegionStatus(`Saved crop evidence: ${label}. You can select it in Rebar Parameters rows.`);
+  }
+
+  function deleteCrop(id: string) {
+    setCropRefs((current) => current.filter((crop) => crop.id !== id));
+    setRebarInfoRows((current) => current.map((row) => ({ ...row, cropImage: row.cropImage === id ? "" : row.cropImage, cropImages: (row.cropImages || []).filter((cropId) => cropId !== id) })));
+  }
+
   function updateRebarGlobalParam(key: keyof RebarGlobalParams, value: string) {
     setRebarGlobalParams((current) => ({ ...current, [key]: value }));
     if (key === "stickLength") {
@@ -625,16 +1125,49 @@ export default function Home() {
     }
   }
 
+  function updateFoundationRebarConfig(key: keyof FoundationRebarConfig, value: string) {
+    setFoundationRebarConfig((current) => ({ ...current, [key]: value }));
+  }
+
   function addRebarInfo() {
-    setRebarInfoRows((current) => [...current, createRebarInfoRow("Footing", current.length + 1)]);
+    setRebarInfoRows((current) => [...current, createRebarInfoRow("Base/Bottom rebar", current.length + 1)]);
   }
 
   function updateRebarInfoRow(id: string, key: keyof RebarInfoRow, value: string) {
     setRebarInfoRows((current) => current.map((row) => (row.id === id ? { ...row, [key]: value } : row)));
   }
 
+  function toggleRowCrop(rowId: string, cropId: string) {
+    setRebarInfoRows((current) => current.map((row) => {
+      if (row.id !== rowId) return row;
+      const cropImages = row.cropImages || [];
+      const nextCropImages = cropImages.includes(cropId)
+        ? cropImages.filter((id) => id !== cropId)
+        : [...cropImages, cropId];
+      return { ...row, cropImages: nextCropImages, cropImage: nextCropImages[0] || "" };
+    }));
+  }
+
   function changeRebarInfoType(id: string, itemType: RebarInfoType) {
-    setRebarInfoRows((current) => current.map((row) => (row.id === id ? { ...row, itemType, segment: nextRebarSegment(current.filter((item) => item.id !== id), itemType), rebarSize: row.rebarSize || (itemType === "Pier" ? rebarGlobalParams.pierRebarSize : rebarGlobalParams.foundationRebarSize) } : row)));
+    setRebarInfoRows((current) => current.map((row) => {
+      if (row.id !== id) return row;
+      const defaults = createRebarInfoRow(itemType, current.filter((item) => item.id !== id && item.itemType === itemType).length + 1);
+      return {
+        ...row,
+        itemType,
+        segment: nextRebarSegment(current.filter((item) => item.id !== id), itemType),
+        number: row.number || defaults.number,
+        spacingBetween: row.spacingBetween || defaults.spacingBetween,
+        spacing: row.spacing || defaults.spacing,
+        traverseNumber: row.traverseNumber || defaults.traverseNumber,
+        clearanceTop: row.clearanceTop || defaults.clearanceTop,
+        clearanceBottom: row.clearanceBottom || defaults.clearanceBottom,
+        clearanceSides: row.clearanceSides || defaults.clearanceSides,
+        rebarSize: row.rebarSize || (itemType === "Pier" ? rebarGlobalParams.pierRebarSize : rebarGlobalParams.foundationRebarSize),
+        duplicateTimes: row.duplicateTimes || defaults.duplicateTimes,
+        count: row.count || defaults.count,
+      };
+    }));
   }
 
   function removeRebarInfoRow(id: string) {
@@ -651,6 +1184,8 @@ export default function Home() {
     setPlanFileName(file.name);
     setPlanFileType(file.type || "unknown");
     setPlanFileSize(file.size);
+    setPlanStoragePath("");
+    setPlanDownloadUrl("");
     setPlanFile(file);
     setPlanPreviewUrl(URL.createObjectURL(file));
     setExtractionStatus("");
@@ -669,6 +1204,7 @@ export default function Home() {
     setRegionRect(null);
     setRegionAnalysis(null);
     setRegionStatus("");
+    setCropRefs([]);
   }
 
   function clearPlan() {
@@ -679,6 +1215,8 @@ export default function Home() {
     setPlanFileName("");
     setPlanFileType("");
     setPlanFileSize(0);
+    setPlanStoragePath("");
+    setPlanDownloadUrl("");
     setPlanPreviewUrl("");
     setPlanFile(null);
     setExtractionStatus("");
@@ -695,15 +1233,202 @@ export default function Home() {
     setRegionRect(null);
     setRegionAnalysis(null);
     setRegionStatus("");
+    setCropRefs([]);
   }
 
-  function applyDetectedValues(values: DetectedValue[]) {
+  function buildDetectedFields(values: DetectedValue[]) {
     const applied = fields.map((field) => {
       const detected = values.find((value) => value.key === field.key);
       if (detected) return { ...field, value: detected.value };
       return extractionMode === "live" ? { ...field, value: "" } : field;
     });
-    const withDerived = applyDerivedFieldValues(applied);
+    return applyDerivedFieldValues(applied);
+  }
+
+  function fieldValueFromList(list: ExtractedField[], key: string) {
+    return list.find((field) => field.key === key)?.value || "";
+  }
+
+  function buildCalculatedRebarRowsFromFields(list: ExtractedField[]) {
+    const clonedRows = rebarInfoRows.map((row) => ({ ...row, cropImages: [...(row.cropImages || [])] }));
+    const pierCountValue = fieldValueFromList(list, "pierCount");
+    const pierDiameterValue = fieldValueFromList(list, "pierDiameter");
+    const pierHeightValue = fieldValueFromList(list, "pierHeight");
+    const sideWallLengthValue = fieldValueFromList(list, "sideWallLength");
+    const endWallLengthValue = fieldValueFromList(list, "endWallLength");
+
+    let nextRows = clonedRows.map((row) => {
+      if (row.itemType === "Pier") {
+        return {
+          ...row,
+          count: pierCountValue || row.count,
+          diameter: pierDiameterValue || row.diameter,
+          length: pierHeightValue || row.length,
+          rebarSize: row.rebarSize || rebarGlobalParams.pierRebarSize,
+        };
+      }
+      if (row.itemType === "Base/Bottom rebar" && !row.length) {
+        return { ...row, length: sideWallLengthValue || endWallLengthValue || row.length };
+      }
+      return row;
+    });
+
+    if (!nextRows.some((row) => row.itemType === "Pier") && (pierCountValue || pierDiameterValue || pierHeightValue)) {
+      nextRows = [
+        ...nextRows,
+        {
+          ...createRebarInfoRow("Pier", nextRows.length + 1),
+          count: pierCountValue,
+          diameter: pierDiameterValue,
+          length: pierHeightValue,
+          rebarSize: rebarGlobalParams.pierRebarSize,
+        },
+      ];
+    }
+
+    return nextRows;
+  }
+
+
+  function firstRegex(text: string, patterns: RegExp[]) {
+    for (const pattern of patterns) {
+      const match = text.match(pattern);
+      if (match?.[1]) return match[1].trim();
+    }
+    return "";
+  }
+
+  function normalizeRebarSize(raw: string | undefined, fallback = "") {
+    const match = (raw || "").match(/#\s*(\d{1,2})(?!\d)/i);
+    if (!match) return fallback;
+    const size = Number(match[1]);
+    // Real US rebar sizes in this app should be small values like #3, #4, #5, etc.
+    // Do not accept PDF/page/detail tags like #246 as a rebar size.
+    if (!Number.isFinite(size) || size < 2 || size > 18) return fallback;
+    return `#${size}`;
+  }
+
+  function firstRebarSize(text: string, fallback = "") {
+    const pattern = /#\s*(\d{1,3})/gi;
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(text)) !== null) {
+      const normalized = normalizeRebarSize(match[0]);
+      if (normalized) return normalized;
+    }
+    return fallback;
+  }
+
+  function firstContextRebarSize(text: string, patterns: RegExp[], fallback = "") {
+    for (const pattern of patterns) {
+      const raw = firstRegex(text, [pattern]);
+      const normalized = normalizeRebarSize(raw);
+      if (normalized) return normalized;
+    }
+    return fallback;
+  }
+
+  function buildCalculatedGlobalsFromPlanText(text: string, detectedList: ExtractedField[]) {
+    const lowerText = text.toLowerCase();
+    return {
+      stickLength: rebarGlobalParams.stickLength,
+      defaultOverlap: firstRegex(lowerText, [/(?:lap|overlap)\D{0,20}(\d+(?:\.\d+)?\s*(?:in|inch|"))/i]) || rebarGlobalParams.defaultOverlap,
+      defaultVerticalToBase: rebarGlobalParams.defaultVerticalToBase,
+      foundationRebarSize: firstRebarSize(lowerText, rebarGlobalParams.foundationRebarSize),
+      pierRebarSize: firstContextRebarSize(lowerText, [/(?:pier|caisson|drilled pier)[\s\S]{0,120}(#\s*\d{1,3})/i], firstRebarSize(lowerText, rebarGlobalParams.pierRebarSize)),
+    };
+  }
+
+  function buildCalculatedRebarRowsFromPlanText(text: string, detectedList: ExtractedField[]) {
+    const lowerText = text.toLowerCase();
+    const detectedValue = (key: string) => fieldValueFromList(detectedList, key);
+    const sideWallLengthValue = detectedValue("sideWallLength");
+    const endWallLengthValue = detectedValue("endWallLength");
+    const pierCountValue = detectedValue("pierCount") || firstRegex(lowerText, [/(\d+)\s*(?:total\s*)?(?:piers|pier\s+locations|caissons)/i]);
+    const pierDiameterValue = detectedValue("pierDiameter") || firstRegex(lowerText, [/(\d+(?:\.\d+)?\s*(?:in|inch|"|dia|diameter))\s*(?:diameter|dia|ø)?\s*(?:pier|caisson)/i, /(?:pier|caisson)[\s\S]{0,80}(\d+(?:\.\d+)?\s*(?:in|inch|")\s*(?:dia|diameter|ø))/i]);
+    const pierHeightValue = detectedValue("pierHeight") || firstRegex(lowerText, [/(?:pier|caisson)[\s\S]{0,120}(\d+(?:\.\d+)?\s*(?:in|inch|"|ft|'))\s*(?:deep|height|long)/i]);
+    const pierVertCount = firstRegex(lowerText, [/(\d+)\s*-?\s*#\s*\d+\s*(?:vert|vertical)/i, /(?:vert|vertical)[\s\S]{0,40}(\d+)\s*-?\s*#\s*\d+/i]);
+    const circleCount = firstRegex(lowerText, [/(\d+)\s*(?:ties|stirrups|hoops|circles)/i]);
+    const circleSpacing = firstRegex(lowerText, [/(?:ties|stirrups|hoops|circles)[\s\S]{0,40}@\s*(\d+(?:\.\d+)?\s*(?:in|inch|"|oc|o\.c\.))/i, /@\s*(\d+(?:\.\d+)?\s*(?:in|inch|"))\s*(?:o\.c\.|oc)/i]);
+
+    return rebarInfoRows.map((manualRow, index) => {
+      const row = { ...manualRow, cropImages: [...(manualRow.cropImages || [])] };
+      const segmentText = `${row.segment} ${row.itemType}`.toLowerCase();
+      if (row.itemType === "Pier") {
+        return {
+          ...row,
+          rebarSize: firstContextRebarSize(lowerText, [/(?:pier|caisson)[\s\S]{0,120}(#\s*\d{1,3})/i]),
+          count: pierCountValue,
+          diameter: pierDiameterValue,
+          length: pierHeightValue,
+          numVerticalBars: pierVertCount,
+          horizontalCircleCount: circleCount,
+          spacing: circleSpacing,
+        };
+      }
+      if (row.itemType === "Base/Bottom rebar") {
+        return {
+          ...row,
+          rebarSize: firstRebarSize(lowerText),
+          length: segmentText.includes("end") ? endWallLengthValue : (segmentText.includes("side") ? sideWallLengthValue : (sideWallLengthValue || endWallLengthValue)),
+        };
+      }
+      if (row.itemType === "Horiz continues longtidues") {
+        return {
+          ...row,
+          rebarSize: firstRebarSize(lowerText),
+          length: segmentText.includes("end") ? endWallLengthValue : (sideWallLengthValue || endWallLengthValue),
+          spacingBetween: firstRegex(lowerText, [/(?:horizontal|longitudinal|cont)[\s\S]{0,80}@\s*(\d+(?:\.\d+)?\s*(?:in|inch|"|oc|o\.c\.))/i]),
+        };
+      }
+      if (row.itemType === "Vertical Rebar") {
+        return {
+          ...row,
+          rebarSize: firstContextRebarSize(lowerText, [/(?:vert|vertical)[\s\S]{0,80}(#\s*\d{1,3})/i], firstRebarSize(lowerText)),
+          verticalSpacingAdjacent: firstRegex(lowerText, [/(?:vert|vertical)[\s\S]{0,80}@\s*(\d+(?:\.\d+)?\s*(?:in|inch|"|oc|o\.c\.))/i]),
+          count: firstRegex(lowerText, [/(\d+)\s*-?\s*#\s*\d+\s*(?:vert|vertical)/i]) || row.count,
+        };
+      }
+      return row;
+    });
+  }
+
+  function normalizeCompareValue(value: string | undefined) {
+    return (value || "").trim().replace(/\s+/g, " ").toLowerCase();
+  }
+
+  function compareStatus(manualValue: string | undefined, calculatedValue: string | undefined) {
+    const manual = normalizeCompareValue(manualValue);
+    const calculated = normalizeCompareValue(calculatedValue);
+    if (!manual && !calculated) return { text: "Both blank", className: "bg-gray-100 text-gray-700" };
+    if (!calculated) return { text: "Missing from PDF", className: "bg-yellow-100 text-yellow-800" };
+    if (!manual) return { text: "New from PDF", className: "bg-blue-100 text-blue-800" };
+    if (manual === calculated) return { text: "Same", className: "bg-green-100 text-green-800" };
+    return { text: "Different", className: "bg-red-100 text-red-800" };
+  }
+
+  function getCalculatedFieldValue(key: string) {
+    return calculatedFields.find((field) => field.key === key)?.value || "";
+  }
+
+  function getCompareBadge(manualValue: string | undefined, calculatedValue: string | undefined) {
+    const status = compareStatus(manualValue, calculatedValue);
+    return (
+      <span className={`ml-2 inline-flex rounded px-2 py-0.5 text-xs font-bold ${status.className}`}>
+        {status.text}
+      </span>
+    );
+  }
+
+  function getCalculatedGlobalValue(key: keyof RebarGlobalParams) {
+    return calculatedGlobals?.[key] || "";
+  }
+
+  function getCalculatedRowValue(rowIndex: number, key: keyof RebarInfoRow) {
+    return String(calculatedRows[rowIndex]?.[key] || "");
+  }
+
+  function applyDetectedValues(values: DetectedValue[]) {
+    const withDerived = buildDetectedFields(values);
     setFields(withDerived);
 
     setFieldSources(() => {
@@ -877,6 +1602,18 @@ export default function Home() {
     }
   }
 
+  async function startCropMode() {
+    if (!planFile || !isPdf) {
+      setRegionStatus("Upload a PDF first.");
+      return;
+    }
+    setCropToolOpen(true);
+    setRegionStatus("Preparing crop canvas...");
+    setTimeout(() => cropToolRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    await renderRegionSelectionPage();
+  }
+
   function handleRegionMouseDown(event: MouseEvent<HTMLCanvasElement>) {
     const point = getRegionCanvasPoint(event);
     if (!point) return;
@@ -966,7 +1703,12 @@ export default function Home() {
 
 
   async function extractPlanData() {
-    if (!planFile) {
+    if (isExtractingPlan) return;
+    setIsExtractingPlan(true);
+    setExtractionProgress("Starting PDF calculation...");
+    setExtractionStatus("Starting PDF calculation...");
+    try {
+      if (!planFile) {
       if (extractionMode === "simulation") {
         setExtractionStatus(
           "No file uploaded. Simulation Mode loaded sample values.",
@@ -980,10 +1722,11 @@ export default function Home() {
           markAllMissing("No PDF uploaded. Live Mode does not guess values."),
         );
       }
-      return;
-    }
+      setExtractionProgress("Stopped: no plan file uploaded.");
+        return;
+      }
 
-    if (!planFile.type.includes("pdf")) {
+      if (!planFile.type.includes("pdf")) {
       if (extractionMode === "simulation") {
         setExtractionStatus(
           "Image OCR is not connected yet. Simulation Mode loaded sample values.",
@@ -999,25 +1742,39 @@ export default function Home() {
           ),
         );
       }
-      return;
-    }
+      setExtractionProgress("Stopped: uploaded file is not a PDF.");
+        return;
+      }
 
-    try {
+      setExtractionProgress("Reading PDF text...");
       setExtractionStatus("Reading PDF text...");
       const text = await extractPdfTextFromFile(planFile);
       setExtractedTextPreview(text.slice(0, 5000));
+      setExtractionProgress("PDF text read. Looking for foundation/rebar pages...");
       const recognition = analyzePlanText(text);
       setRecognitionReport(recognition);
 
+      setExtractionProgress("Extracting rebar parameters from PDF text...");
       const result = extractDetectedValuesFromPlanText(
         recognition.preferredText || text,
         { mode: extractionMode },
       );
-      applyDetectedValues(result.detectedValues);
+      const calculatedFieldSet = buildDetectedFields(result.detectedValues);
+      setManualComparisonFields(fields);
+      setManualComparisonRows(rebarInfoRows.map((row) => ({ ...row, cropImages: [...(row.cropImages || [])] })));
+      setManualComparisonGlobals({ ...rebarGlobalParams });
+      setCalculatedFields(calculatedFieldSet);
+      setCalculatedRows(buildCalculatedRebarRowsFromPlanText(recognition.preferredText || text, calculatedFieldSet));
+      setCalculatedGlobals(buildCalculatedGlobalsFromPlanText(recognition.preferredText || text, calculatedFieldSet));
+      setCalculatedAt(new Date().toLocaleString());
+      setShowParamComparison(true);
+      setParamViewMode("calculated");
+      setExtractionProgress("Calculated parameters created. Comparing with manual entry...");
 
       let visualNotes: string[] = [];
       if (useExternalVisualAnalyzer) {
         try {
+          setExtractionProgress("Running external visual/PDF image analyzer...");
           const visual = await runSpatialPlanAnalysis(planFile);
           visualNotes = [
             visual.sourcePolicy ? `External visual policy: ${visual.sourcePolicy}` : "",
@@ -1057,6 +1814,7 @@ export default function Home() {
             `${item.key}: ${item.value} (${item.confidence}) - ${item.reason}`,
         ),
       ]);
+      setExtractionProgress("Completed: PDF calculation finished and comparison table updated.");
       setExtractionStatus(
         extractionMode === "live"
           ? useExternalVisualAnalyzer
@@ -1081,6 +1839,8 @@ export default function Home() {
           ),
         );
       }
+    } finally {
+      setIsExtractingPlan(false);
     }
   }
 
@@ -1305,66 +2065,83 @@ export default function Home() {
     });
   }
 
-  function generateSchedule() {
-    const blockingMissingKeys = getBlockingLiveModeMissingFields();
-    if (blockingMissingKeys.length > 0) {
-      const labels = blockingMissingKeys
-        .map(
-          (key) =>
-            initialFields.find((field) => field.key === key)?.label || key,
-        )
-        .slice(0, 8)
-        .join(", ");
-      setExtractionStatus(
-        `Live Mode blocked schedule generation. Missing/Sim values must be entered or extracted first: ${labels}${blockingMissingKeys.length > 8 ? "..." : ""}`,
-      );
-      return;
-    }
+  async function saveGeneratedScheduleOnly(savedGeneratedSchedule: SavedGeneratedSchedule) {
+    if (!user || !workspaceDocId) return;
+    const projectId = currentProjectId || `${user.uid}-${Date.now()}`;
+    const cleanProjectName = projectName.trim() || "ADU Foundation";
+    const payload = {
+      ...getWorkspaceSnapshot(),
+      projectName: cleanProjectName,
+      savedGeneratedSchedule,
+      id: projectId,
+      ownerUid: user.uid,
+      ownerEmail: user.email || "",
+      app: "rebar-planner",
+      updatedAt: serverTimestamp(),
+      ...(currentProjectId ? {} : { createdAt: serverTimestamp() }),
+    };
 
-    if (pierMode === "unknown") {
-      setPierDialogOpen(true);
-      setPierMessage(
-        "Confirm pier details before generating, or choose I do not have piers.",
-      );
-      return;
-    }
-    const result = generateRebarSchedule({
-      sideWallLength: getFieldValue("sideWallLength"),
-      sideBaseOuterLength: getFieldValue("sideBaseOuterLength"),
-      sideBaseMiddleLength: getFieldValue("sideBaseMiddleLength"),
-      sideBaseInnerLength: getFieldValue("sideBaseInnerLength"),
-      endWallLength: getFieldValue("endWallLength"),
-      endBaseOuterLength: getFieldValue("endBaseOuterLength"),
-      endBaseMiddleLength: getFieldValue("endBaseMiddleLength"),
-      endBaseInnerLength: getFieldValue("endBaseInnerLength"),
-      stockLengthFeet: Number(stickLength) || 20,
-      horizontalOverlapInches: Number(horizontalLap) || 24,
-      verticalBentOverlapInches: Number(verticalBentLap) || 6,
-      sideTotalHeight: getFieldValue("sideTotalHeight"),
-      endTotalHeight: getFieldValue("endTotalHeight"),
-      footingDepth: getFieldValue("footingDepth"),
-      sideVerticalQty: getFieldValue("sideVerticalQty"),
-      sideVerticalBottomClearance: getFieldValue("sideVerticalBottomClearance"),
-      sideVerticalTopClearance: getFieldValue("sideVerticalTopClearance"),
-      sideVerticalUsedHeight: getFieldValue("sideVerticalUsedHeight"),
-      endVerticalQty: getFieldValue("endVerticalQty"),
-      endVerticalBottomClearance: getFieldValue("endVerticalBottomClearance"),
-      endVerticalTopClearance: getFieldValue("endVerticalTopClearance"),
-      endVerticalUsedHeight: getFieldValue("endVerticalUsedHeight"),
-      baseShortVerticalQty: getFieldValue("baseShortVerticalQty"),
-      baseShortVerticalCutLength: getFieldValue("baseShortVerticalCutLength"),
-      hasPiers: pierMode === "yes",
-      pierCount: getFieldValue("pierCount"),
-      pierDiameter: getFieldValue("pierDiameter"),
-      pierHeight: getFieldValue("pierHeight"),
-    });
+    await setDoc(doc(db, "plannerProjects", projectId), payload, { merge: true });
+    await setDoc(doc(db, "plannerWorkspaces", workspaceDocId), {
+      ...payload,
+      activeProjectId: projectId,
+      createdAt: serverTimestamp(),
+    }, { merge: true });
+    setCurrentProjectId(projectId);
+    await loadSavedProjects(user.uid);
+  }
 
-    setSchedule(result.schedule);
-    setSummary(result.summary);
-    setMaterialTakeoff(result.materialTakeoff);
-    setFilter("ALL");
-    setSelectedMark(result.schedule[0]?.mark || "");
-    setSelectedPrefix(result.schedule[0]?.prefix || "");
+  async function generateSchedule() {
+    if (isGeneratingSchedule) return;
+    setIsGeneratingSchedule(true);
+    const sourceRows = showingCalculatedParams && calculatedRows.length > 0 ? calculatedRows : rebarInfoRows;
+    const sourceGlobals = showingCalculatedParams && calculatedGlobals ? calculatedGlobals : rebarGlobalParams;
+    const sourceLabel = showingCalculatedParams && calculatedRows.length > 0 ? "calculated PDF parameters" : "manual parameters";
+    setScheduleGenerationStatus("Starting manual rebar schedule calculation...");
+
+    try {
+      await new Promise((resolve) => window.setTimeout(resolve, 80));
+      setScheduleGenerationStatus(`Reading ${sourceLabel}, row notes, bend settings, lap length, and stick length...`);
+      await new Promise((resolve) => window.setTimeout(resolve, 80));
+
+      const result = generateManualRebarSchedule({
+        rows: sourceRows,
+        stockLength: sourceGlobals.stickLength,
+        defaultOverlap: sourceGlobals.defaultOverlap,
+        defaultVerticalToBase: sourceGlobals.defaultVerticalToBase,
+        defaultFoundationRebarSize: sourceGlobals.foundationRebarSize,
+        defaultPierRebarSize: sourceGlobals.pierRebarSize,
+      });
+
+      setScheduleGenerationStatus("Splitting continuous bars by stick length, adding lap splices, and placing bent returns...");
+      await new Promise((resolve) => window.setTimeout(resolve, 80));
+
+      const generatedAtIso = new Date().toISOString();
+      const savedGeneratedSchedule: SavedGeneratedSchedule = {
+        generatedAtIso,
+        sourceLabel,
+        schedule: result.schedule,
+        summary: result.summary,
+        materialTakeoff: result.materialTakeoff,
+      };
+      setSchedule(result.schedule);
+      setSummary(result.summary);
+      setMaterialTakeoff(result.materialTakeoff);
+      setSavedScheduleAt(generatedAtIso);
+      setFilter("ALL");
+      setSelectedMark(result.schedule[0]?.mark || "");
+      setSelectedPrefix(result.schedule[0]?.prefix || "");
+      setScheduleGenerationStatus("Saving latest generated schedule with project...");
+      await saveGeneratedScheduleOnly(savedGeneratedSchedule);
+      setScheduleGenerationStatus(
+        `Completed and saved. Generated ${result.schedule.length} schedule lines, ${result.materialTakeoff.cutCount} cut pieces: ${result.materialTakeoff.bentPieceCount} need bending and ${result.materialTakeoff.straightPieceCount} stay straight. Sticks to buy: ${result.materialTakeoff.sticksToBuy}.`,
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setScheduleGenerationStatus(`Schedule generation failed: ${message}`);
+    } finally {
+      setIsGeneratingSchedule(false);
+    }
   }
 
   function downloadCsv() {
@@ -1421,6 +2198,15 @@ export default function Home() {
 
   const isPdf = planFileType.includes("pdf");
   const isImage = planFileType.startsWith("image/");
+  const showingCalculatedParams = paramViewMode === "calculated";
+  const displayedGlobalParams = showingCalculatedParams && calculatedGlobals ? calculatedGlobals : rebarGlobalParams;
+  const rawDisplayedRows = showingCalculatedParams && calculatedRows.length > 0 ? calculatedRows : rebarInfoRows;
+  const rebarTypeOrder: RebarInfoType[] = ["Base/Bottom rebar", "Horiz continues longtidues", "Vertical Rebar", "Pier", "Misc"];
+  const displayedRows = [...rawDisplayedRows].sort((a, b) => {
+    const typeDiff = rebarTypeOrder.indexOf(a.itemType) - rebarTypeOrder.indexOf(b.itemType);
+    if (typeDiff !== 0) return typeDiff;
+    return rebarInfoRows.findIndex((row) => row.id === a.id) - rebarInfoRows.findIndex((row) => row.id === b.id);
+  });
 
   return (
     <main className="min-h-screen bg-gray-100 p-6">
@@ -1428,7 +2214,7 @@ export default function Home() {
         {pierDialogOpen && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
             <div className="w-full max-w-xl rounded-lg bg-white p-6 shadow-xl">
-              <h2 className="text-2xl font-bold">Enter Pier Details</h2>
+              <h2 className="text-2xl font-bold">Pier Details</h2>
               <p className="mt-2 text-sm text-gray-600">
                 Confirm this before calculation. The app will not guess the
                 final pier count from OCR/image detection.
@@ -1519,12 +2305,147 @@ export default function Home() {
           <div className="mt-4 flex flex-wrap items-center gap-3 text-sm">
             <span className="rounded border bg-gray-50 px-3 py-2">{user.email} · {authRole}</span>
             {(authRole === "owner" || authRole === "admin") && <Link href="/admin" className="rounded border px-3 py-2 font-semibold hover:bg-gray-50">Admin</Link>}
-            <button type="button" onClick={saveWorkspace} className="rounded bg-blue-700 px-3 py-2 font-semibold text-white hover:bg-blue-800">Save Workspace</button>
-            <button type="button" onClick={loadWorkspace} className="rounded border px-3 py-2 font-semibold hover:bg-gray-50">Load Workspace</button>
+            <button type="button" onClick={startNewProject} className="rounded border px-3 py-2 font-semibold hover:bg-gray-50">New Project</button>
+            <button type="button" onClick={saveWorkspace} className="rounded bg-blue-700 px-3 py-2 font-semibold text-white hover:bg-blue-800">Save Project</button>
+            <button type="button" onClick={loadWorkspace} className="rounded border px-3 py-2 font-semibold hover:bg-gray-50">Load Last Workspace</button>
             <button type="button" onClick={logout} className="rounded border px-3 py-2 font-semibold hover:bg-gray-50">Logout</button>
             {workspaceStatus && <span className="text-gray-600">{workspaceStatus}</span>}
           </div>
         </div>
+
+        <div className="mb-6 rounded-lg border bg-white p-4 shadow-sm">
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div>
+              <h2 className="text-xl font-bold text-gray-900">Planner View</h2>
+              <p className="text-sm text-gray-600">Simple view keeps only project information, PDF viewing, and the manual parameters. Advanced view keeps the original tools.</p>
+            </div>
+            <div className="flex flex-wrap items-start gap-3">
+              <div className="min-w-40">
+                <button
+                  type="button"
+                  onClick={() => setPlannerView("simple")}
+                  title="Show the simpler project/PDF/manual-parameters screen."
+                  className={`w-full rounded px-4 py-2 font-semibold ${plannerView === "simple" ? "bg-blue-700 text-white" : "border bg-white hover:bg-gray-50"}`}
+                >
+                  Simplified View <span className="ml-1 rounded-full border px-1 text-xs" aria-hidden="true">i</span>
+                </button>
+                <div className="mt-1 text-xs text-gray-500">Simple PDF + manual data view.</div>
+              </div>
+              <div className="min-w-40">
+                <button
+                  type="button"
+                  onClick={() => setPlannerView("advanced")}
+                  title="Show the full extraction, crop, calculated-data, and project tools."
+                  className={`w-full rounded px-4 py-2 font-semibold ${plannerView === "advanced" ? "bg-gray-900 text-white" : "border bg-white hover:bg-gray-50"}`}
+                >
+                  Advanced View <span className="ml-1 rounded-full border px-1 text-xs" aria-hidden="true">i</span>
+                </button>
+                <div className="mt-1 text-xs text-gray-500">Full tools and PDF extraction.</div>
+              </div>
+              <div className="min-w-56">
+                <button
+                  type="button"
+                  onClick={generateSchedule}
+                  disabled={isGeneratingSchedule}
+                  title="Generate the rebar schedule from the current manual parameters and save the latest schedule with this project."
+                  className="w-full rounded bg-gray-900 px-4 py-2 font-semibold text-white hover:bg-gray-800 disabled:cursor-wait disabled:bg-gray-500"
+                >
+                  {isGeneratingSchedule ? "Generating..." : "Generate Rebar Schedule"} <span className="ml-1 rounded-full border px-1 text-xs" aria-hidden="true">i</span>
+                </button>
+                <div className="mt-1 text-xs text-gray-500">Calculates pieces, bends, sticks, and saves latest schedule.</div>
+              </div>
+            </div>
+          </div>
+          {scheduleGenerationStatus && (
+            <div className={`mt-3 rounded border p-3 text-sm font-semibold ${isGeneratingSchedule ? "border-blue-300 bg-blue-50 text-blue-900" : scheduleGenerationStatus.startsWith("Schedule generation failed") ? "border-red-300 bg-red-50 text-red-900" : "border-green-300 bg-green-50 text-green-900"}`}>
+              {scheduleGenerationStatus}
+              {savedScheduleAt && !isGeneratingSchedule && (
+                <div className="mt-1 text-xs font-normal">Last saved schedule: {new Date(savedScheduleAt).toLocaleString()}</div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {plannerView === "simple" && (
+          <section className="mb-6 rounded-xl border bg-white p-5 shadow-sm">
+            <h2 className="text-2xl font-bold text-gray-900">Project Information</h2>
+            <div className="mt-3 grid gap-3 md:grid-cols-3">
+              <label className="font-semibold">Project name
+                <input value={projectName} onChange={(e) => setProjectName(e.target.value)} className="mt-1 w-full rounded border p-2" />
+              </label>
+              <div className="rounded border bg-gray-50 p-3">
+                <div className="text-sm font-semibold text-gray-600">PDF file</div>
+                <div className="font-bold text-gray-900">{planFileName || "No PDF loaded"}</div>
+              </div>
+              <div className="rounded border bg-gray-50 p-3">
+                <div className="text-sm font-semibold text-gray-600">File info</div>
+                <div className="font-bold text-gray-900">{planFileType || "unknown"}{fileSizeLabel ? ` · ${fileSizeLabel}` : ""}</div>
+              </div>
+            </div>
+            <div className="mt-5 rounded border bg-gray-50 p-4">
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                <h3 className="text-xl font-bold">PDF Viewer</h3>
+                <div className="flex items-center gap-2">
+                  <button type="button" onClick={() => setPdfZoom((z) => Math.max(50, z - 25))} className="rounded border bg-white px-3 py-2 font-semibold hover:bg-gray-100">−</button>
+                  <span className="min-w-16 text-center font-semibold">{pdfZoom}%</span>
+                  <button type="button" onClick={() => setPdfZoom((z) => Math.min(200, z + 25))} className="rounded border bg-white px-3 py-2 font-semibold hover:bg-gray-100">+</button>
+                </div>
+              </div>
+              {pdfViewerUrl ? (
+                <iframe src={pdfViewerUrl} title="PDF plan viewer" className="h-[720px] w-full rounded border bg-white" />
+              ) : (
+                <div className="rounded border border-dashed bg-white p-8 text-center text-gray-600">No PDF available in this project yet. Use Advanced View to upload/load a plan.</div>
+              )}
+            </div>
+          </section>
+        )}
+
+        {plannerView === "advanced" && (
+        <>
+        <section className="rounded-xl border bg-white p-4 shadow-sm">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="text-2xl font-bold text-gray-900">Saved Projects</h2>
+              <p className="text-sm text-gray-600">Projects are saved in Firestore with crops, parameters, and rebar info rows. Load a project to edit and re-run.</p>
+            </div>
+            <button type="button" onClick={() => loadSavedProjects()} className="rounded bg-gray-200 px-3 py-2 font-semibold hover:bg-gray-300">Refresh Projects</button>
+          </div>
+          {savedProjects.length === 0 ? (
+            <p className="rounded border border-dashed p-3 text-gray-600">No saved projects yet.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[760px] border-collapse text-left">
+                <thead>
+                  <tr className="border-b bg-gray-50 text-sm text-gray-600">
+                    <th className="p-2">Project</th>
+                    <th className="p-2">Plan</th>
+                    <th className="p-2">Rows</th>
+                    <th className="p-2">Crops</th>
+                    <th className="p-2">Updated</th>
+                    <th className="p-2">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {savedProjects.map((project) => (
+                    <tr key={project.id} className={`border-b ${project.id === currentProjectId ? "bg-blue-50" : ""}`}>
+                      <td className="p-2 font-semibold">{project.projectName}</td>
+                      <td className="p-2 text-sm text-gray-700">{project.planFileName}</td>
+                      <td className="p-2">{project.rowCount}</td>
+                      <td className="p-2">{project.cropCount}</td>
+                      <td className="p-2 text-sm text-gray-600">{project.updatedAtLabel || ""}</td>
+                      <td className="p-2">
+                        <div className="flex flex-wrap gap-2">
+                          <button type="button" onClick={() => loadProject(project.id)} className="rounded bg-blue-700 px-3 py-1.5 font-semibold text-white hover:bg-blue-800">Load / Edit</button>
+                          <button type="button" onClick={() => deleteProject(project.id, project.projectName)} className="rounded bg-red-600 px-3 py-1.5 font-semibold text-white hover:bg-red-700">Delete</button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
 
         <div className="grid gap-6 xl:grid-cols-2">
           <section className="rounded-lg bg-white p-6 shadow">
@@ -1671,15 +2592,26 @@ export default function Home() {
                 </div>
               </div>
 
-              <button
-                type="button"
-                onClick={extractPlanData}
-                className="rounded bg-blue-600 p-3 font-semibold text-white hover:bg-blue-700"
-              >
-                {extractionMode === "live"
-                  ? "Extract Plan Data - Live"
-                  : "Extract Plan Data - Simulation"}
-              </button>
+              <div className="grid gap-2">
+                <button
+                  type="button"
+                  onClick={extractPlanData}
+                  disabled={isExtractingPlan}
+                  className="rounded bg-blue-600 p-3 font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-300"
+                >
+                  {isExtractingPlan
+                    ? "Calculating Rebar Prms from PDF..."
+                    : extractionMode === "live"
+                    ? "Calculate Rebar Prms from PDF - Live"
+                    : "Calculate Rebar Prms from PDF - Simulation"}
+                </button>
+                {(extractionProgress || extractionStatus) && (
+                  <div className={`rounded border p-3 text-sm ${isExtractingPlan ? "border-blue-300 bg-blue-50 text-blue-900" : extractionProgress.startsWith("Completed") ? "border-green-300 bg-green-50 text-green-900" : "border-gray-300 bg-gray-50 text-gray-800"}`}>
+                    <div className="font-bold">PDF calculation status</div>
+                    <div>{extractionProgress || extractionStatus}</div>
+                  </div>
+                )}
+              </div>
             </div>
           </section>
 
@@ -1689,6 +2621,66 @@ export default function Home() {
             {!planPreviewUrl && (
               <div className="flex min-h-[500px] items-center justify-center rounded border border-dashed border-gray-300 bg-gray-50 p-6 text-center text-gray-500">
                 Upload a PDF, PNG, JPG, or JPEG plan to preview it here.
+              </div>
+            )}
+
+            {planPreviewUrl && isPdf && (
+              <div className="mb-3 rounded border border-blue-200 bg-blue-50 p-3">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <h3 className="font-semibold text-blue-950">Crop evidence from PDF</h3>
+                    <p className="text-sm text-blue-900">Click Start Crop, then drag a rectangle on the rendered crop canvas. The normal PDF viewer below cannot be cropped directly.</p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <label className="text-sm font-semibold text-blue-950">Page
+                      <input
+                        type="number"
+                        min="1"
+                        value={regionPageNumber}
+                        onChange={(event) => setRegionPageNumber(event.target.value)}
+                        className="ml-2 w-20 rounded border p-2"
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      onClick={startCropMode}
+                      className="rounded bg-blue-700 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-800"
+                    >
+                      Start Crop
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {cropRefs.length > 0 && (
+              <div className="mb-4 rounded border border-gray-200 bg-white p-3">
+                <div className="mb-3 flex items-center justify-between gap-3">
+                  <div>
+                    <h3 className="font-semibold text-gray-950">Saved Crop Images</h3>
+                    <p className="text-sm text-gray-600">These crop images load with the project and can be attached to one or more rebar info rows.</p>
+                  </div>
+                  <span className="rounded bg-gray-100 px-3 py-1 text-sm font-semibold text-gray-700">{cropRefs.length} crop{cropRefs.length === 1 ? "" : "s"}</span>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                  {cropRefs.map((crop) => (
+                    <div key={crop.id} className="rounded border bg-gray-50 p-2 text-xs">
+                      <div className="mb-2 flex items-start justify-between gap-2">
+                        <div>
+                          <div className="font-bold text-gray-950">{cropDisplayName(crop)}</div>
+                          <div className="text-gray-600">{crop.elementType}{crop.note ? ` · ${crop.note}` : ""}</div>
+                        </div>
+                        <button type="button" onClick={() => deleteCrop(crop.id)} className="rounded border bg-white px-2 py-1 font-semibold hover:bg-gray-100">Delete</button>
+                      </div>
+                      {cropImageUrl(crop) ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={cropImageUrl(crop)} alt={crop.label} className="h-36 w-full rounded border bg-white object-contain" />
+                      ) : (
+                        <div className="flex h-36 items-center justify-center rounded border bg-white text-gray-500">Image URL missing</div>
+                      )}
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
 
@@ -1712,10 +2704,10 @@ export default function Home() {
             )}
 
 
-            {planPreviewUrl && isPdf && (
-              <div className="mt-4 rounded border border-blue-200 bg-blue-50 p-4">
+            {planPreviewUrl && isPdf && cropToolOpen && (
+              <div ref={cropToolRef} className="mt-4 rounded border border-blue-200 bg-blue-50 p-4">
                 <h3 className="mb-2 text-lg font-semibold text-blue-950">
-                  Selected Rectangle Extraction
+                  Crop Evidence / Selected Rectangle Extraction
                 </h3>
                 <p className="mb-3 text-sm text-blue-900">
                   Use this when the full sheet is too noisy. Render one PDF page, drag a box around a detail/rebar specification
@@ -1738,7 +2730,7 @@ export default function Home() {
                     onClick={renderRegionSelectionPage}
                     className="rounded bg-blue-700 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-800"
                   >
-                    Render Page for Selection
+                    Re-render Page
                   </button>
                   <button
                     type="button"
@@ -1747,6 +2739,14 @@ export default function Home() {
                     className="rounded bg-green-700 px-4 py-2 text-sm font-semibold text-white hover:bg-green-800 disabled:bg-gray-400"
                   >
                     Analyze Selected Rectangle
+                  </button>
+                  <button
+                    type="button"
+                    onClick={saveSelectedCrop}
+                    disabled={!regionRect}
+                    className="rounded bg-blue-700 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-800 disabled:bg-gray-400"
+                  >
+                    Save Crop Evidence
                   </button>
                   <div className="flex items-center gap-2 rounded border bg-white px-2 py-1">
                     <span className="text-xs font-semibold text-gray-700">Viewer zoom</span>
@@ -1775,6 +2775,52 @@ export default function Home() {
                   </div>
                 </div>
 
+                <div className="mb-3 grid gap-3 rounded border border-blue-200 bg-white p-3 md:grid-cols-4">
+                  <label className="text-sm font-semibold">Crop type
+                    <select
+                      value={cropElementType}
+                      onChange={(event) => {
+                        const next = event.target.value as RebarInfoType;
+                        setCropElementType(next);
+                        setCropLabel(`${next} crop`);
+                      }}
+                      className="mt-1 w-full rounded border p-2"
+                    >
+                      {rebarInfoTypes.map((type) => <option key={type}>{type}</option>)}
+                    </select>
+                  </label>
+                  <label className="text-sm font-semibold">Crop label
+                    <input value={cropLabel} onChange={(event) => setCropLabel(event.target.value)} className="mt-1 w-full rounded border p-2" />
+                  </label>
+                  <label className="text-sm font-semibold md:col-span-2">Crop note
+                    <input value={cropNote} onChange={(event) => setCropNote(event.target.value)} placeholder="Example: Side wall detail rebar callout" className="mt-1 w-full rounded border p-2" />
+                  </label>
+                </div>
+
+                {cropRefs.length > 0 && (
+                  <div className="mb-3 rounded border border-gray-200 bg-white p-3">
+                    <h4 className="mb-2 font-semibold">Saved crop evidence</h4>
+                    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                      {cropRefs.map((crop) => (
+                        <div key={crop.id} className="rounded border bg-gray-50 p-2 text-xs">
+                          <div className="mb-1 flex items-start justify-between gap-2">
+                            <div>
+                              <strong>{cropDisplayName(crop)}</strong>
+                              {crop.note && <div className="text-gray-600">{crop.note}</div>}
+                            </div>
+                            <button type="button" onClick={() => deleteCrop(crop.id)} className="rounded border px-2 py-1 font-semibold hover:bg-white">Delete</button>
+                          </div>
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img src={crop.imageDataUrl || crop.downloadUrl || ""} alt={crop.label} className="max-h-40 w-full rounded object-contain" />
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                <div className="mb-2 rounded border border-yellow-300 bg-yellow-50 p-2 text-sm text-yellow-900">
+                  Drag directly on the canvas below to mark the crop rectangle. After the red box appears, choose type/label/note and click Save Crop Evidence.
+                </div>
                 <div className="overflow-auto rounded border bg-white p-2">
                   <canvas
                     ref={regionCanvasRef}
@@ -2081,11 +3127,15 @@ export default function Home() {
           </section>
         </div>
 
+        </>
+        )}
+
         <section className="mt-6 rounded-lg bg-white p-6 shadow">
           <h2 className="mb-4 text-2xl font-semibold">
-            Confirm Detected Values
+            {plannerView === "simple" ? "Manual Rebar Parameters" : "Confirm Detected Values"}
           </h2>
 
+          {plannerView === "advanced" && (
           <div className="mb-4 grid gap-2 text-xs md:grid-cols-6">
             <div className="rounded border border-green-300 bg-green-50 p-2 text-green-800">
               <strong>PDF Text</strong> = directly read from PDF text
@@ -2106,98 +3156,440 @@ export default function Home() {
               <strong>Missing</strong> = not found; no fake data
             </div>
           </div>
+          )}
 
           <div className="grid gap-4">
             <div className="rounded-lg border bg-gray-50 p-4">
               <h3 className="text-lg font-semibold">Rebar Parameters</h3>
-              <p className="mb-4 text-xs text-gray-600">Shared collector/planner parameter structure. Use crop references only when visual proof is needed.</p>
+              <p className="mb-4 text-xs text-gray-600">Shared collector/planner parameter structure. {plannerView === "simple" ? "Simple view: these manual parameters, row notes, overlaps, bend settings, and stock stick length are used by Generate Rebar Schedule." : "Use crop references only when visual proof is needed."}</p>
 
               <div className="mb-5 rounded border bg-white p-4">
                 <h4 className="mb-3 text-sm font-bold uppercase text-gray-700">Global params</h4>
                 <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                  <label className="font-semibold">Stick len
-                    <input value={rebarGlobalParams.stickLength} onChange={(e) => updateRebarGlobalParam("stickLength", e.target.value)} placeholder="20'" className="mt-1 w-full rounded border p-2" />
+                  <label className="font-semibold">Stick len {showingCalculatedParams && getCompareBadge(rebarGlobalParams.stickLength, getCalculatedGlobalValue("stickLength"))}
+                    <input value={displayedGlobalParams.stickLength} disabled={showingCalculatedParams} onChange={(e) => updateRebarGlobalParam("stickLength", e.target.value)} placeholder="20'" className="mt-1 w-full rounded border p-2" />
                   </label>
-                  <label className="font-semibold">Default overlap
-                    <input value={rebarGlobalParams.defaultOverlap} onChange={(e) => updateRebarGlobalParam("defaultOverlap", e.target.value)} placeholder={'24"'} className="mt-1 w-full rounded border p-2" />
+                  <label className="font-semibold">Default overlap {showingCalculatedParams && getCompareBadge(rebarGlobalParams.defaultOverlap, getCalculatedGlobalValue("defaultOverlap"))}
+                    <input value={displayedGlobalParams.defaultOverlap} disabled={showingCalculatedParams} onChange={(e) => updateRebarGlobalParam("defaultOverlap", e.target.value)} placeholder={'24"'} className="mt-1 w-full rounded border p-2" />
                   </label>
-                  <label className="font-semibold">Default vertical to base
-                    <input value={rebarGlobalParams.defaultVerticalToBase} onChange={(e) => updateRebarGlobalParam("defaultVerticalToBase", e.target.value)} placeholder={'6"'} className="mt-1 w-full rounded border p-2" />
+                  <label className="font-semibold">Default vertical to base {showingCalculatedParams && getCompareBadge(rebarGlobalParams.defaultVerticalToBase, getCalculatedGlobalValue("defaultVerticalToBase"))}
+                    <input value={displayedGlobalParams.defaultVerticalToBase} disabled={showingCalculatedParams} onChange={(e) => updateRebarGlobalParam("defaultVerticalToBase", e.target.value)} placeholder={'6"'} className="mt-1 w-full rounded border p-2" />
                   </label>
-                  <label className="font-semibold">Default rebar for footing / walls
-                    <input value={rebarGlobalParams.foundationRebarSize} onChange={(e) => updateRebarGlobalParam("foundationRebarSize", e.target.value)} placeholder="#4" className="mt-1 w-full rounded border p-2" />
+                  <label className="font-semibold">Default rebar for footing / walls {showingCalculatedParams && getCompareBadge(rebarGlobalParams.foundationRebarSize, getCalculatedGlobalValue("foundationRebarSize"))}
+                    <input value={displayedGlobalParams.foundationRebarSize} disabled={showingCalculatedParams} onChange={(e) => updateRebarGlobalParam("foundationRebarSize", e.target.value)} placeholder="#4" className="mt-1 w-full rounded border p-2" />
                   </label>
-                  <label className="font-semibold">Default rebar for piers
-                    <input value={rebarGlobalParams.pierRebarSize} onChange={(e) => updateRebarGlobalParam("pierRebarSize", e.target.value)} placeholder="#4" className="mt-1 w-full rounded border p-2" />
+                  <label className="font-semibold">Default rebar for piers {showingCalculatedParams && getCompareBadge(rebarGlobalParams.pierRebarSize, getCalculatedGlobalValue("pierRebarSize"))}
+                    <input value={displayedGlobalParams.pierRebarSize} disabled={showingCalculatedParams} onChange={(e) => updateRebarGlobalParam("pierRebarSize", e.target.value)} placeholder="#4" className="mt-1 w-full rounded border p-2" />
                   </label>
                 </div>
               </div>
 
+              <div className="mb-4 rounded border bg-white p-4">
+                <h3 className="mb-2 text-lg font-bold">Foundation / Rebar Item Structure</h3>
+                <p className="text-sm text-gray-600">
+                  Use <strong>Add rebar info</strong> to add one item at a time. Each item can be Base/Bottom rebar, horizontal continuous longitudinals, vertical rebar, pier, or misc, and each item can reference one or more crop images.
+                </p>
+              </div>
+
+              {plannerView === "advanced" && (
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded border bg-white p-3">
+                <div>
+                  <div className="font-bold">Manual entry data vs calculated data</div>
+                  <div className="text-xs text-gray-600">
+                    Use the buttons to flip the parameter form between your manual entry and the calculated PDF values.
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setParamViewMode("manual")}
+                    className={`rounded px-3 py-2 font-semibold ${paramViewMode === "manual" ? "bg-blue-700 text-white" : "border hover:bg-gray-50"}`}
+                  >
+                    Show manual values
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setParamViewMode("calculated");
+                      setShowParamComparison(true);
+                    }}
+                    className={`rounded px-3 py-2 font-semibold ${paramViewMode === "calculated" ? "bg-blue-700 text-white" : "border hover:bg-gray-50"}`}
+                  >
+                    Show calculated values
+                  </button>
+                  <button type="button" onClick={() => setShowParamComparison((current) => !current)} className="rounded border px-3 py-2 font-semibold hover:bg-gray-50">
+                    {showParamComparison ? "Hide comparison" : "Show comparison"}
+                  </button>
+                </div>
+              </div>
+              )}
+
+              {plannerView === "advanced" && showingCalculatedParams && (
+                <div className="mb-3 rounded border border-blue-300 bg-blue-50 p-3 text-sm text-blue-950">
+                  Showing calculated PDF values in the form below. Fields are read-only here. Match badges show Same / Different / Missing from PDF / New from PDF compared with your manual entry.
+                </div>
+              )}
+
+              {plannerView === "advanced" && showParamComparison && (
+                <div className="mb-4 rounded border border-blue-200 bg-blue-50 p-3 text-sm">
+                  <div className="mb-3 font-bold text-blue-950">Comparison {calculatedAt ? `(calculated ${calculatedAt})` : "(not calculated yet)"}</div>
+                  {calculatedRows.length === 0 ? (
+                    <div className="rounded border bg-white p-3 text-gray-700">Press <strong>Calculate Rebar Prms from PDF</strong> first. The app will read PDF text, rendered PDF/image analysis when enabled, and crop evidence, then place those values here as calculated parameters.</div>
+                  ) : (
+                    <div className="grid gap-4">
+                      <div className="overflow-auto rounded border bg-white">
+                        <table className="w-full min-w-[760px] text-left text-xs">
+                          <thead className="bg-gray-100"><tr><th className="p-2">Parameter</th><th className="p-2">Manual entry</th><th className="p-2">Calculated from PDF</th><th className="p-2">Status</th></tr></thead>
+                          <tbody>
+                            {manualComparisonGlobals && calculatedGlobals && ([
+                              ["Stick len", manualComparisonGlobals.stickLength, calculatedGlobals.stickLength],
+                              ["Default overlap", manualComparisonGlobals.defaultOverlap, calculatedGlobals.defaultOverlap],
+                              ["Default vertical to base", manualComparisonGlobals.defaultVerticalToBase, calculatedGlobals.defaultVerticalToBase],
+                              ["Default rebar for footing / walls", manualComparisonGlobals.foundationRebarSize, calculatedGlobals.foundationRebarSize],
+                              ["Default rebar for piers", manualComparisonGlobals.pierRebarSize, calculatedGlobals.pierRebarSize],
+                            ] as [string, string, string][]).map(([label, manualValue, calculatedValue]) => {
+                              const status = compareStatus(manualValue, calculatedValue);
+                              return <tr key={label} className="border-t"><td className="p-2 font-semibold">{label}</td><td className="p-2">{manualValue || "—"}</td><td className="p-2">{calculatedValue || "—"}</td><td className="p-2"><span className={`rounded px-2 py-1 font-semibold ${status.className}`}>{status.text}</span></td></tr>;
+                            })}
+                            <tr className="border-t"><td className="p-2 text-gray-600" colSpan={4}>Old parameter-page values are hidden. Comparison now focuses on the new manual rebar parameter set below.</td></tr>
+                          </tbody>
+                        </table>
+                      </div>
+
+                      <div className="overflow-auto rounded border bg-white">
+                        <table className="w-full min-w-[900px] text-left text-xs">
+                          <thead className="bg-gray-100"><tr><th className="p-2">Rebar row / field</th><th className="p-2">Manual entry</th><th className="p-2">Calculated from PDF</th><th className="p-2">Status</th></tr></thead>
+                          <tbody>
+                            {manualComparisonRows.flatMap((manualRow, rowIndex) => {
+                              const calculatedRow = calculatedRows[rowIndex];
+                              const rowFields: [keyof RebarInfoRow, string][] = [
+                                ["itemType", "Type"], ["segment", "Segment"], ["rebarSize", "Rebar #"], ["duplicateTimes", "Times to duplicate / number of piers"], ["count", "Count"], ["calcLength", "Calculate len"], ["length", "Length"], ["diameter", "Diameter"], ["number", "Number"], ["spacingBetween", "Space between"], ["traverseLength", "Traverse piece len"], ["spacing", "Spacing between circles"], ["horizontalCircleCount", "Number of H-Circles"], ["numVerticalBars", "Vertical bars count"], ["verticalBent", "Vertical bent"], ["verticalBentLength", "Vertical bent len"], ["clearanceTop", "Soil clearance top"], ["clearanceBottom", "Soil clearance bottom"], ["clearanceSides", "Soil clearance sides"],
+                              ];
+                              return rowFields.map(([key, label]) => {
+                                const manualValue = String(manualRow[key] || "");
+                                const calculatedValue = String(calculatedRow?.[key] || "");
+                                const status = compareStatus(manualValue, calculatedValue);
+                                return <tr key={`${manualRow.id}-${String(key)}`} className="border-t"><td className="p-2 font-semibold">{manualRow.segment || `Row ${rowIndex + 1}`} — {label}</td><td className="p-2">{manualValue || "—"}</td><td className="p-2">{calculatedValue || "—"}</td><td className="p-2"><span className={`rounded px-2 py-1 font-semibold ${status.className}`}>{status.text}</span></td></tr>;
+                              });
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
               <div className="mb-3 flex justify-end">
-                <button type="button" onClick={addRebarInfo} className="rounded bg-blue-700 px-3 py-2 font-semibold text-white hover:bg-blue-800">Add rebar info</button>
+                <button type="button" onClick={addRebarInfo} disabled={showingCalculatedParams} className="rounded bg-blue-700 px-3 py-2 font-semibold text-white hover:bg-blue-800 disabled:cursor-not-allowed disabled:bg-gray-400">Add rebar info</button>
               </div>
 
               <div className="grid gap-4">
-                {rebarInfoRows.map((row) => (
-                  <div key={row.id} className="rounded-lg border bg-white p-4">
-                    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
-                      <label className="font-semibold">Type
-                        <select value={row.itemType} onChange={(e) => changeRebarInfoType(row.id, e.target.value as RebarInfoType)} className="mt-1 w-full rounded border p-2">
-                          {rebarInfoTypes.map((type) => <option key={type}>{type}</option>)}
-                        </select>
-                      </label>
-                      <label className="font-semibold">Segment
-                        <input value={row.segment} onChange={(e) => updateRebarInfoRow(row.id, "segment", e.target.value)} placeholder="Footing1 / Wall1 / Pier1 / Misc1" className="mt-1 w-full rounded border p-2" />
-                      </label>
+                {displayedRows.map((row, rowIndex) => (
+                  <div key={row.id} className={`rounded-lg border bg-white p-4 ${showingCalculatedParams ? "pointer-events-none opacity-95" : ""}`}>
+                    <div className="grid gap-4">
+                      <div className="grid gap-4 md:grid-cols-4">
+                        <label className="font-semibold">Type {showingCalculatedParams && getCompareBadge(rebarInfoRows[rowIndex]?.itemType, row.itemType)}
+                          <select value={row.itemType} onChange={(e) => changeRebarInfoType(row.id, e.target.value as RebarInfoType)} className="mt-1 w-full rounded border p-2">
+                            {rebarInfoTypes.map((type) => <option key={type}>{type}</option>)}
+                          </select>
+                        </label>
+                        <label className="font-semibold">Segment / item name {showingCalculatedParams && getCompareBadge(rebarInfoRows[rowIndex]?.segment, row.segment)}
+                          <input value={row.segment} onChange={(e) => updateRebarInfoRow(row.id, "segment", e.target.value)} placeholder="BaseBottom1 / Horiz1 / Vertical1 / Pier1 / Misc1" className="mt-1 w-full rounded border p-2" />
+                        </label>
+                        <label className="font-semibold">Rebar # {showingCalculatedParams && getCompareBadge(rebarInfoRows[rowIndex]?.rebarSize, row.rebarSize)}
+                          <input value={row.rebarSize} onChange={(e) => updateRebarInfoRow(row.id, "rebarSize", e.target.value)} placeholder={row.itemType === "Pier" ? rebarGlobalParams.pierRebarSize : rebarGlobalParams.foundationRebarSize} className="mt-1 w-full rounded border p-2" />
+                        </label>
+                        <label className="font-semibold">{row.itemType === "Pier" ? "Number of piers" : "Times to duplicate this"} {showingCalculatedParams && getCompareBadge(rebarInfoRows[rowIndex]?.duplicateTimes, row.duplicateTimes)}
+                          <input value={row.duplicateTimes} onChange={(e) => updateRebarInfoRow(row.id, "duplicateTimes", e.target.value)} placeholder={row.itemType === "Pier" ? "14" : "2"} className="mt-1 w-full rounded border p-2" />
+                          <span className="mt-1 block text-xs font-normal text-gray-500">{row.itemType === "Pier" ? "number of piers" : "number of sides like this"}</span>
+                        </label>
+                      </div>
 
-                      {(row.itemType === "Footing" || row.itemType === "Wall" || row.itemType === "Misc") && (
-                        <>
-                          <label className="font-semibold">Len
-                            <input value={row.length} onChange={(e) => updateRebarInfoRow(row.id, "length", e.target.value)} placeholder={`Example: 52' 0"`} className="mt-1 w-full rounded border p-2" />
-                          </label>
-                          <label className="font-semibold">Turn
-                            <input value={row.turn} onChange={(e) => updateRebarInfoRow(row.id, "turn", e.target.value)} placeholder="0 / 45 / 90 / free text" className="mt-1 w-full rounded border p-2" />
-                          </label>
-                          <label className="font-semibold">Bent len
-                            <input value={row.bentLength} onChange={(e) => updateRebarInfoRow(row.id, "bentLength", e.target.value)} placeholder={'Example: 6" or 12"'} className="mt-1 w-full rounded border p-2" />
-                          </label>
-                        </>
+
+                      {row.itemType === "Base/Bottom rebar" && (
+                        <div className="grid gap-4">
+                          <div className="rounded border bg-gray-50 p-3">
+                            <h4 className="mb-3 font-bold">Continuous longitudinals</h4>
+                            <div className="grid gap-3 md:grid-cols-3">
+                              <label className="font-semibold">Number {showingCalculatedParams && getCompareBadge(rebarInfoRows[rowIndex]?.number, row.number)}
+                                <input value={row.number} onChange={(e) => updateRebarInfoRow(row.id, "number", e.target.value)} placeholder="N/A or number" className="mt-1 w-full rounded border p-2" />
+                              </label>
+                              <label className="font-semibold">Len {showingCalculatedParams && getCompareBadge(rebarInfoRows[rowIndex]?.length, row.length)}
+                                <input value={row.length} onChange={(e) => updateRebarInfoRow(row.id, "length", e.target.value)} placeholder={`Example: 52' 0"`} className="mt-1 w-full rounded border p-2" />
+                              </label>
+                              <label className="font-semibold">Space between {showingCalculatedParams && getCompareBadge(rebarInfoRows[rowIndex]?.spacingBetween, row.spacingBetween)}
+                                <input value={row.spacingBetween} onChange={(e) => updateRebarInfoRow(row.id, "spacingBetween", e.target.value)} placeholder={'Example: 8"'} className="mt-1 w-full rounded border p-2" />
+                              </label>
+                            </div>
+                            <div className="mt-3 grid gap-3 md:grid-cols-2">
+                              <div className="rounded border bg-white p-3">
+                                <h5 className="mb-2 font-bold">Ending - Side 1</h5>
+                                <div className="grid gap-3 md:grid-cols-3">
+                                  <label className="font-semibold">Bent?
+                                    <select value={row.side1Bent} onChange={(e) => updateRebarInfoRow(row.id, "side1Bent", e.target.value)} className="mt-1 w-full rounded border p-2"><option value="">Select</option><option>Yes</option><option>No</option></select>
+                                  </label>
+                                  <label className="font-semibold">Turn angle
+                                    <input value={row.side1TurnAngle} onChange={(e) => updateRebarInfoRow(row.id, "side1TurnAngle", e.target.value)} placeholder="0 / 45 / 90" className="mt-1 w-full rounded border p-2" />
+                                  </label>
+                                  <label className="font-semibold">Bent len
+                                    <input value={row.side1BentLength} onChange={(e) => updateRebarInfoRow(row.id, "side1BentLength", e.target.value)} placeholder={'Example: 24"'} className="mt-1 w-full rounded border p-2" />
+                                  </label>
+                                </div>
+                              </div>
+                              <div className="rounded border bg-white p-3">
+                                <h5 className="mb-2 font-bold">Ending - Side 2</h5>
+                                <div className="grid gap-3 md:grid-cols-3">
+                                  <label className="font-semibold">Bent?
+                                    <select value={row.side2Bent} onChange={(e) => updateRebarInfoRow(row.id, "side2Bent", e.target.value)} className="mt-1 w-full rounded border p-2"><option value="">Select</option><option>Yes</option><option>No</option></select>
+                                  </label>
+                                  <label className="font-semibold">Turn angle
+                                    <input value={row.side2TurnAngle} onChange={(e) => updateRebarInfoRow(row.id, "side2TurnAngle", e.target.value)} placeholder="0 / 45 / 90" className="mt-1 w-full rounded border p-2" />
+                                  </label>
+                                  <label className="font-semibold">Bent len
+                                    <input value={row.side2BentLength} onChange={(e) => updateRebarInfoRow(row.id, "side2BentLength", e.target.value)} placeholder={'Example: 24"'} className="mt-1 w-full rounded border p-2" />
+                                  </label>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="rounded border bg-gray-50 p-3">
+                            <h4 className="mb-3 font-bold">Traverse bars</h4>
+                            <div className="grid gap-3 md:grid-cols-3">
+                              <label className="font-semibold">Number
+                                <input value={row.traverseNumber} onChange={(e) => updateRebarInfoRow(row.id, "traverseNumber", e.target.value)} placeholder="N/A or number" className="mt-1 w-full rounded border p-2" />
+                              </label>
+                              <label className="font-semibold">Space between
+                                <input value={row.traverseSpacing} onChange={(e) => updateRebarInfoRow(row.id, "traverseSpacing", e.target.value)} placeholder={'Example: 12" OC'} className="mt-1 w-full rounded border p-2" />
+                              </label>
+                              <label className="font-semibold">Traverse piece len
+                                <input value={row.traverseLength} onChange={(e) => updateRebarInfoRow(row.id, "traverseLength", e.target.value)} placeholder={`Example: 13' 4"`} className="mt-1 w-full rounded border p-2" />
+                              </label>
+                            </div>
+                          </div>
+
+                          <div className="rounded border bg-gray-50 p-3">
+                            <h4 className="mb-3 font-bold">Space from trench soil</h4>
+                            <div className="grid gap-3 md:grid-cols-3">
+                              <label className="font-semibold">Top
+                                <input value={row.clearanceTop} onChange={(e) => updateRebarInfoRow(row.id, "clearanceTop", e.target.value)} placeholder={'3"'} className="mt-1 w-full rounded border p-2" />
+                              </label>
+                              <label className="font-semibold">Bottom
+                                <input value={row.clearanceBottom} onChange={(e) => updateRebarInfoRow(row.id, "clearanceBottom", e.target.value)} placeholder={'3"'} className="mt-1 w-full rounded border p-2" />
+                              </label>
+                              <label className="font-semibold">Sides
+                                <input value={row.clearanceSides} onChange={(e) => updateRebarInfoRow(row.id, "clearanceSides", e.target.value)} placeholder={'3"'} className="mt-1 w-full rounded border p-2" />
+                              </label>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      {row.itemType === "Horiz continues longtidues" && (
+                        <div className="grid gap-4">
+                          <div className="rounded border bg-gray-50 p-3">
+                            <h4 className="mb-3 font-bold">Horizontal continuous longitudinals</h4>
+                            <div className="grid gap-3 md:grid-cols-3">
+                              <label className="font-semibold">Len {showingCalculatedParams && getCompareBadge(rebarInfoRows[rowIndex]?.length, row.length)}
+                                <input value={row.length} onChange={(e) => updateRebarInfoRow(row.id, "length", e.target.value)} placeholder={`Example: 52' 0"`} className="mt-1 w-full rounded border p-2" />
+                              </label>
+                              <label className="font-semibold">Number {showingCalculatedParams && getCompareBadge(rebarInfoRows[rowIndex]?.number, row.number)}
+                                <input value={row.number} onChange={(e) => updateRebarInfoRow(row.id, "number", e.target.value)} placeholder="1 / N/A / blank" className="mt-1 w-full rounded border p-2" />
+                              </label>
+                              <label className="font-semibold">Space between {showingCalculatedParams && getCompareBadge(rebarInfoRows[rowIndex]?.spacingBetween, row.spacingBetween)}
+                                <input value={row.spacingBetween} onChange={(e) => updateRebarInfoRow(row.id, "spacingBetween", e.target.value)} placeholder="0" className="mt-1 w-full rounded border p-2" />
+                              </label>
+                            </div>
+                            <div className="mt-3 grid gap-3 md:grid-cols-2">
+                              <div className="rounded border bg-white p-3">
+                                <h5 className="mb-2 font-bold">Ending - Side 1</h5>
+                                <div className="grid gap-3 md:grid-cols-3">
+                                  <label className="font-semibold">Bent?
+                                    <select value={row.side1Bent} onChange={(e) => updateRebarInfoRow(row.id, "side1Bent", e.target.value)} className="mt-1 w-full rounded border p-2"><option value="">Select</option><option>Yes</option><option>No</option></select>
+                                  </label>
+                                  <label className="font-semibold">Turn angle
+                                    <input value={row.side1TurnAngle} onChange={(e) => updateRebarInfoRow(row.id, "side1TurnAngle", e.target.value)} placeholder="0 / 45 / 90" className="mt-1 w-full rounded border p-2" />
+                                  </label>
+                                  <label className="font-semibold">Bent len
+                                    <input value={row.side1BentLength} onChange={(e) => updateRebarInfoRow(row.id, "side1BentLength", e.target.value)} placeholder={'Example: 24"'} className="mt-1 w-full rounded border p-2" />
+                                  </label>
+                                </div>
+                              </div>
+                              <div className="rounded border bg-white p-3">
+                                <h5 className="mb-2 font-bold">Ending - Side 2</h5>
+                                <div className="grid gap-3 md:grid-cols-3">
+                                  <label className="font-semibold">Bent?
+                                    <select value={row.side2Bent} onChange={(e) => updateRebarInfoRow(row.id, "side2Bent", e.target.value)} className="mt-1 w-full rounded border p-2"><option value="">Select</option><option>Yes</option><option>No</option></select>
+                                  </label>
+                                  <label className="font-semibold">Turn angle
+                                    <input value={row.side2TurnAngle} onChange={(e) => updateRebarInfoRow(row.id, "side2TurnAngle", e.target.value)} placeholder="0 / 45 / 90" className="mt-1 w-full rounded border p-2" />
+                                  </label>
+                                  <label className="font-semibold">Bent len
+                                    <input value={row.side2BentLength} onChange={(e) => updateRebarInfoRow(row.id, "side2BentLength", e.target.value)} placeholder={'Example: 24"'} className="mt-1 w-full rounded border p-2" />
+                                  </label>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      {row.itemType === "Vertical Rebar" && (
+                        <div className="rounded border bg-gray-50 p-3">
+                          <h4 className="mb-3 font-bold">Vertical bars</h4>
+                          <div className="grid gap-3 md:grid-cols-3">
+                            <label className="font-semibold">Space between adjacent
+                              <input value={row.verticalSpacingAdjacent} onChange={(e) => updateRebarInfoRow(row.id, "verticalSpacingAdjacent", e.target.value)} placeholder={'Example: 12" OC'} className="mt-1 w-full rounded border p-2" />
+                            </label>
+                            <label className="font-semibold">Count
+                              <input value={row.count} onChange={(e) => updateRebarInfoRow(row.id, "count", e.target.value)} onBlur={(e) => { if (!e.target.value.trim()) updateRebarInfoRow(row.id, "count", "N/A"); }} placeholder="N/A" className="mt-1 w-full rounded border p-2" />
+                              <span className="mt-1 block text-xs font-normal text-gray-500">Use N/A to calculate from run length and spacing.</span>
+                            </label>
+                            <label className="font-semibold">Bar straight len
+                              <input value={row.length} onChange={(e) => updateRebarInfoRow(row.id, "length", e.target.value)} placeholder={'Example: 30"'} className="mt-1 w-full rounded border p-2" />
+                            </label>
+                            <label className="font-semibold">Calculate len / total run
+                              <input value={row.calcLength} onChange={(e) => updateRebarInfoRow(row.id, "calcLength", e.target.value)} placeholder="Auto from base/bottom total" className="mt-1 w-full rounded border p-2" />
+                              <span className="mt-1 block text-xs font-normal text-gray-500">If Count is N/A, qty = this run length / spacing + 1. Blank uses total base/bottom length.</span>
+                            </label>
+                          </div>
+                          <div className="mt-3 grid gap-3 md:grid-cols-2">
+                            <div className="rounded border bg-white p-3">
+                              <h5 className="mb-2 font-bold">Side 1</h5>
+                              <div className="grid gap-3 md:grid-cols-3">
+                                <label className="font-semibold">Bent?
+                                  <select value={row.side1Bent} onChange={(e) => updateRebarInfoRow(row.id, "side1Bent", e.target.value)} className="mt-1 w-full rounded border p-2"><option value="">Select</option><option>Yes</option><option>No</option></select>
+                                </label>
+                                <label className="font-semibold">Turn angle
+                                  <input value={row.side1TurnAngle} onChange={(e) => updateRebarInfoRow(row.id, "side1TurnAngle", e.target.value)} placeholder="0 / 45 / 90" className="mt-1 w-full rounded border p-2" />
+                                </label>
+                                <label className="font-semibold">Bent len
+                                  <input value={row.side1BentLength} onChange={(e) => updateRebarInfoRow(row.id, "side1BentLength", e.target.value)} placeholder={'Example: 6"'} className="mt-1 w-full rounded border p-2" />
+                                </label>
+                              </div>
+                            </div>
+                            <div className="rounded border bg-white p-3">
+                              <h5 className="mb-2 font-bold">Side 2</h5>
+                              <div className="grid gap-3 md:grid-cols-3">
+                                <label className="font-semibold">Bent?
+                                  <select value={row.side2Bent} onChange={(e) => updateRebarInfoRow(row.id, "side2Bent", e.target.value)} className="mt-1 w-full rounded border p-2"><option value="">Select</option><option>Yes</option><option>No</option></select>
+                                </label>
+                                <label className="font-semibold">Turn angle
+                                  <input value={row.side2TurnAngle} onChange={(e) => updateRebarInfoRow(row.id, "side2TurnAngle", e.target.value)} placeholder="0 / 45 / 90" className="mt-1 w-full rounded border p-2" />
+                                </label>
+                                <label className="font-semibold">Bent len
+                                  <input value={row.side2BentLength} onChange={(e) => updateRebarInfoRow(row.id, "side2BentLength", e.target.value)} placeholder={'Example: 6"'} className="mt-1 w-full rounded border p-2" />
+                                </label>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
                       )}
 
                       {row.itemType === "Pier" && (
-                        <>
-                          <label className="font-semibold">Diameter
-                            <input value={row.diameter} onChange={(e) => updateRebarInfoRow(row.id, "diameter", e.target.value)} placeholder={'Example: 28"'} className="mt-1 w-full rounded border p-2" />
-                          </label>
-                          <label className="font-semibold">Length
-                            <input value={row.length} onChange={(e) => updateRebarInfoRow(row.id, "length", e.target.value)} placeholder={'Example: 30"'} className="mt-1 w-full rounded border p-2" />
-                          </label>
-                          <label className="font-semibold">Horizontal circle count
-                            <input value={row.horizontalCircleCount} onChange={(e) => updateRebarInfoRow(row.id, "horizontalCircleCount", e.target.value)} placeholder="Example: 4" className="mt-1 w-full rounded border p-2" />
-                          </label>
-                          <label className="font-semibold">Vertical bars
-                            <input value={row.numVerticalBars} onChange={(e) => updateRebarInfoRow(row.id, "numVerticalBars", e.target.value)} placeholder="Example: 6" className="mt-1 w-full rounded border p-2" />
-                          </label>
-                          <label className="font-semibold">Vertical bent?
-                            <select value={row.verticalBent} onChange={(e) => updateRebarInfoRow(row.id, "verticalBent", e.target.value)} className="mt-1 w-full rounded border p-2">
-                              <option value="">Select</option><option>Yes</option><option>No</option>
-                            </select>
-                          </label>
-                          <label className="font-semibold">Vertical bent len
-                            <input value={row.verticalBentLength} onChange={(e) => updateRebarInfoRow(row.id, "verticalBentLength", e.target.value)} placeholder={'Example: 6"'} className="mt-1 w-full rounded border p-2" />
-                          </label>
-                        </>
+                        <div className="rounded border bg-gray-50 p-3">
+                          <h4 className="mb-3 font-bold">Pier rebar</h4>
+                          <div className="grid gap-3 md:grid-cols-3">
+                            <label className="font-semibold">Diameter
+                              <input value={row.diameter} onChange={(e) => updateRebarInfoRow(row.id, "diameter", e.target.value)} placeholder={'Example: 28"'} className="mt-1 w-full rounded border p-2" />
+                            </label>
+                            <label className="font-semibold">Length
+                              <input value={row.length} onChange={(e) => updateRebarInfoRow(row.id, "length", e.target.value)} placeholder={'Example: 30"'} className="mt-1 w-full rounded border p-2" />
+                            </label>
+                            <label className="font-semibold">Number of H-Circles
+                              <input value={row.horizontalCircleCount} onChange={(e) => updateRebarInfoRow(row.id, "horizontalCircleCount", e.target.value)} placeholder="N/A or 4" className="mt-1 w-full rounded border p-2" />
+                              <span className="mt-1 block text-xs font-normal text-gray-500">Use N/A to calculate from pier length and spacing.</span>
+                            </label>
+                            <label className="font-semibold">Vertical bars count
+                              <input value={row.numVerticalBars} onChange={(e) => updateRebarInfoRow(row.id, "numVerticalBars", e.target.value)} placeholder="Example: 6" className="mt-1 w-full rounded border p-2" />
+                            </label>
+                            <label className="font-semibold">Spacing between circles
+                              <input value={row.spacing} onChange={(e) => updateRebarInfoRow(row.id, "spacing", e.target.value)} placeholder='Example: 8"' className="mt-1 w-full rounded border p-2" />
+                            </label>
+                            <label className="font-semibold">Vertical bent?
+                              <select value={row.verticalBent} onChange={(e) => updateRebarInfoRow(row.id, "verticalBent", e.target.value)} className="mt-1 w-full rounded border p-2">
+                                <option value="">Select</option><option>Yes</option><option>No</option>
+                              </select>
+                            </label>
+                            <label className="font-semibold">Vertical bent len
+                              <input value={row.verticalBentLength} onChange={(e) => updateRebarInfoRow(row.id, "verticalBentLength", e.target.value)} placeholder={'Example: 6"'} className="mt-1 w-full rounded border p-2" />
+                            </label>
+                          </div>
+                          <div className="mt-3 rounded border bg-white p-3">
+                            <h4 className="mb-3 font-bold">Space from trench soil</h4>
+                            <div className="grid gap-3 md:grid-cols-3">
+                              <label className="font-semibold">Top
+                                <input value={row.clearanceTop} onChange={(e) => updateRebarInfoRow(row.id, "clearanceTop", e.target.value)} placeholder={'3"'} className="mt-1 w-full rounded border p-2" />
+                              </label>
+                              <label className="font-semibold">Bottom
+                                <input value={row.clearanceBottom} onChange={(e) => updateRebarInfoRow(row.id, "clearanceBottom", e.target.value)} placeholder={'3"'} className="mt-1 w-full rounded border p-2" />
+                              </label>
+                              <label className="font-semibold">Sides
+                                <input value={row.clearanceSides} onChange={(e) => updateRebarInfoRow(row.id, "clearanceSides", e.target.value)} placeholder={'3"'} className="mt-1 w-full rounded border p-2" />
+                              </label>
+                            </div>
+                          </div>
+                        </div>
                       )}
 
-                      <label className="font-semibold">Crop image
-                        <input value={row.cropImage} onChange={(e) => updateRebarInfoRow(row.id, "cropImage", e.target.value)} placeholder="No crop / crop id / reference" className="mt-1 w-full rounded border p-2" />
-                      </label>
-                      <label className="font-semibold">Rebar #
-                        <input value={row.rebarSize} onChange={(e) => updateRebarInfoRow(row.id, "rebarSize", e.target.value)} placeholder={row.itemType === "Pier" ? rebarGlobalParams.pierRebarSize : rebarGlobalParams.foundationRebarSize} className="mt-1 w-full rounded border p-2" />
-                      </label>
-                      <label className="font-semibold sm:col-span-2 lg:col-span-3 2xl:col-span-4">Descriptive note
-                        <textarea value={row.note} onChange={(e) => updateRebarInfoRow(row.id, "note", e.target.value)} placeholder="Any extra note for this row." className="mt-1 min-h-24 w-full rounded border p-2" />
-                      </label>
+                      {row.itemType === "Misc" && (
+                        <div className="rounded border bg-gray-50 p-3 text-sm text-gray-700">
+                          Misc rows are for notes, unusual rebar details, or plan callouts that do not fit the main types.
+                        </div>
+                      )}
+
+                      {plannerView === "advanced" && (
+                      <div className="font-semibold" data-crop-dropdown>
+                        <div>Crop images</div>
+                        {cropRefs.length === 0 ? (
+                          <div className="mt-1 rounded border bg-white p-3 text-sm font-normal text-gray-500">No crops saved yet.</div>
+                        ) : (
+                          <div className="relative mt-1 rounded border bg-white">
+                            <button
+                              type="button"
+                              onClick={() => setOpenCropDropdownRowId((current) => current === row.id ? "" : row.id)}
+                              className="plainButton flex w-full items-center justify-between gap-3 p-3 text-left text-sm font-semibold"
+                            >
+                              <span className="truncate">{selectedCropSummary(row)}</span>
+                              <span className="shrink-0 text-gray-500">Select one or more ▾</span>
+                            </button>
+                            {openCropDropdownRowId === row.id && (
+                              <div className="absolute z-30 mt-1 max-h-96 w-full overflow-auto rounded border bg-white p-2 shadow-lg">
+                                <div className="grid gap-2 sm:grid-cols-2">
+                                  {cropRefs.map((crop) => {
+                                    const selected = (row.cropImages || []).includes(crop.id) || row.cropImage === crop.id;
+                                    return (
+                                      <label key={crop.id} className={`flex cursor-pointer gap-2 rounded border p-2 text-sm ${selected ? "border-blue-500 bg-blue-50" : "border-gray-200 hover:bg-gray-50"}`}>
+                                        <input type="checkbox" className="mt-1" checked={selected} onChange={() => toggleRowCrop(row.id, crop.id)} />
+                                        <span className="min-w-0 flex-1">
+                                          <span className="block font-semibold">{cropDisplayName(crop)}</span>
+                                          {crop.note && <span className="block truncate text-xs font-normal text-gray-600">{crop.note}</span>}
+                                          {cropImageUrl(crop) && (
+                                            // eslint-disable-next-line @next/next/no-img-element
+                                            <img src={cropImageUrl(crop)} alt={crop.label} className="mt-2 h-20 w-full rounded border bg-white object-contain" />
+                                          )}
+                                        </span>
+                                      </label>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                      )}
+
+                      <div className="rounded border bg-gray-100 p-3 text-sm text-gray-700">
+                        <div className="mb-2 font-semibold text-gray-900">Descriptive note</div>
+                        <div className="mb-2 rounded border border-gray-200 bg-gray-50 p-2 text-gray-700">
+                          <strong>Calculation guide:</strong> {rebarInfoGuideline(row)}
+                        </div>
+                        <label className="block font-semibold">Additional field note
+                          <textarea value={row.note} onChange={(e) => updateRebarInfoRow(row.id, "note", e.target.value)} placeholder="Add your extra field notes here. The calculation guide above stays with this row and cannot be deleted." className="mt-1 min-h-20 w-full rounded border bg-white p-2" />
+                        </label>
+                      </div>
                     </div>
                     {rebarInfoRows.length > 1 && (
                       <div className="mt-3 flex justify-end">
@@ -2209,41 +3601,27 @@ export default function Home() {
               </div>
 
               <div className="mt-4 flex justify-end">
-                <button type="button" onClick={addRebarInfo} className="rounded bg-blue-700 px-3 py-2 font-semibold text-white hover:bg-blue-800">Add rebar info</button>
+                <button type="button" onClick={addRebarInfo} disabled={showingCalculatedParams} className="rounded bg-blue-700 px-3 py-2 font-semibold text-white hover:bg-blue-800 disabled:cursor-not-allowed disabled:bg-gray-400">Add rebar info</button>
               </div>
             </div>
-          </div>
-
-          <div className="mt-5 rounded border border-purple-300 bg-purple-50 p-3 text-sm text-purple-900">
-            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-              <div>
-                <strong>Pier Details</strong>
-                <div className="text-xs">
-                  {pierMode === "unknown"
-                    ? "Not confirmed yet. Required before generating."
-                    : pierMode === "yes"
-                      ? `Confirmed: ${getFieldValue("pierCount") || "?"} piers, ${getFieldValue("pierDiameter") || "diameter ?"}, height ${getFieldValue("pierHeight") || "?"}`
-                      : "No piers selected."}
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setPierDialogOpen(true)}
-                className="rounded bg-purple-700 px-3 py-2 font-semibold text-white hover:bg-purple-800"
-              >
-                Enter Pier Details
-              </button>
-            </div>
-            {pierMessage && <div className="text-xs">{pierMessage}</div>}
           </div>
 
           <button
             type="button"
             onClick={generateSchedule}
-            className="mt-5 w-full rounded bg-gray-900 p-3 font-semibold text-white hover:bg-gray-800"
+            disabled={isGeneratingSchedule}
+            className="mt-5 w-full rounded bg-gray-900 p-3 font-semibold text-white hover:bg-gray-800 disabled:cursor-wait disabled:bg-gray-500"
           >
-            Generate Rebar Schedule
+            {isGeneratingSchedule ? "Generating Rebar Schedule..." : "Generate Rebar Schedule"}
           </button>
+          {scheduleGenerationStatus && (
+            <div className={`mt-3 rounded border p-3 font-semibold ${isGeneratingSchedule ? "border-blue-300 bg-blue-50 text-blue-900" : scheduleGenerationStatus.startsWith("Schedule generation failed") ? "border-red-300 bg-red-50 text-red-900" : "border-green-300 bg-green-50 text-green-900"}`}>
+              {scheduleGenerationStatus}
+              {savedScheduleAt && !isGeneratingSchedule && (
+                <div className="mt-1 text-sm font-normal">Last saved schedule: {new Date(savedScheduleAt).toLocaleString()}</div>
+              )}
+            </div>
+          )}
         </section>
 
         <section className="mt-6 rounded-lg bg-white p-6 shadow">
@@ -2290,21 +3668,21 @@ export default function Home() {
                 <div className="mx-auto flex max-w-xl flex-col items-center gap-2">
                   <button
                     type="button"
-                    onClick={() => selectPrefix("EW-H-WALL-T")}
-                    className={`w-64 rounded border p-3 font-semibold ${selectedPrefix === "EW-H-WALL-T" ? "bg-yellow-200" : "bg-white"}`}
+                    onClick={() => selectPrefix("SW-H-WALL-T")}
+                    className={`w-96 max-w-full rounded border p-3 font-semibold ${selectedPrefix === "SW-H-WALL-T" ? "bg-yellow-200" : "bg-white"}`}
                   >
-                    EW-H-WALL-T
+                    SW-H-WALL-T / SW-H-BASE-T
                   </button>
 
                   <div className="flex w-full items-stretch justify-center gap-2">
-                    <div className="grid gap-2">
+                    <div className="grid content-center gap-2">
                       {[
-                        "SW-H-BASE-O",
-                        "SW-H-BASE-M",
-                        "SW-H-BASE-I",
-                        "SW-H-WALL-B",
-                        "SW-H-WALL-M",
-                        "SW-H-WALL-T",
+                        "EW-H-BASE-O",
+                        "EW-H-BASE-M",
+                        "EW-H-BASE-I",
+                        "EW-H-WALL-B",
+                        "EW-H-WALL-M",
+                        "EW-H-WALL-T",
                       ].map((prefix) => (
                         <button
                           key={prefix}
@@ -2317,18 +3695,18 @@ export default function Home() {
                       ))}
                     </div>
 
-                    <div className="flex min-h-56 flex-1 items-center justify-center rounded border-4 border-gray-400 bg-white text-center text-gray-500">
-                      Foundation Plan Area
+                    <div className="flex min-h-48 min-w-96 flex-[1.5] items-center justify-center rounded border-4 border-gray-400 bg-white text-center text-gray-500">
+                      Foundation Plan Area<br />Top/Bottom = Side Walls<br />Left/Right = End Walls
                     </div>
 
-                    <div className="grid gap-2">
+                    <div className="grid content-center gap-2">
                       {[
-                        "SW-H-BASE-O",
-                        "SW-H-BASE-M",
-                        "SW-H-BASE-I",
-                        "SW-H-WALL-B",
-                        "SW-H-WALL-M",
-                        "SW-H-WALL-T",
+                        "EW-H-BASE-O",
+                        "EW-H-BASE-M",
+                        "EW-H-BASE-I",
+                        "EW-H-WALL-B",
+                        "EW-H-WALL-M",
+                        "EW-H-WALL-T",
                       ].map((prefix) => (
                         <button
                           key={`right-${prefix}`}
@@ -2344,10 +3722,10 @@ export default function Home() {
 
                   <button
                     type="button"
-                    onClick={() => selectPrefix("EW-H-WALL-B")}
-                    className={`w-64 rounded border p-3 font-semibold ${selectedPrefix === "EW-H-WALL-B" ? "bg-yellow-200" : "bg-white"}`}
+                    onClick={() => selectPrefix("SW-H-WALL-B")}
+                    className={`w-96 max-w-full rounded border p-3 font-semibold ${selectedPrefix === "SW-H-WALL-B" ? "bg-yellow-200" : "bg-white"}`}
                   >
-                    EW-H-WALL-B
+                    SW-H-WALL-B / SW-H-BASE-B
                   </button>
                 </div>
               </div>
@@ -2528,6 +3906,16 @@ export default function Home() {
                 <strong>Bends</strong>
                 <br />
                 {materialTakeoff.bendCount}
+              </div>
+              <div className="rounded border p-3">
+                <strong>Full sticks straight/no cut</strong>
+                <br />
+                {materialTakeoff.straightStockStickCount ?? 0}
+              </div>
+              <div className="rounded border p-3">
+                <strong>Sticks need cut/bend</strong>
+                <br />
+                {materialTakeoff.cutOrBentStockStickCount ?? 0}
               </div>
             </div>
           )}
