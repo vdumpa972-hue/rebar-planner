@@ -33,6 +33,9 @@ type UserRow = {
   role?: string;
   status?: string;
   displayName?: string;
+  planStatus?: string;
+  planName?: string;
+  trialEndsAt?: string;
 };
 
 type WorkspaceRow = {
@@ -140,12 +143,17 @@ export default function PlannerAdminPage() {
       await updateProfile(cred.user, { displayName: cleanDisplayName }).catch(() => {});
       await signOut(secondaryAuth).catch(() => {});
 
+      const trialEndsAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString();
       await setDoc(doc(db, "users", cred.user.uid), {
         email: cleanEmail,
         username: cleanUsername,
         displayName: cleanDisplayName,
         role: cleanRole,
         status: "active",
+        planStatus: cleanRole === "owner" ? "owner" : "trialing",
+        planName: cleanRole === "owner" ? "owner" : "trial",
+        trialStartedAt: new Date().toISOString(),
+        trialEndsAt,
         mustChangePassword: true,
         app: "rebar-planner",
         createdByEmail: currentEmail,
@@ -248,8 +256,8 @@ export default function PlannerAdminPage() {
           </div>
           <div className="tableWrap">
             <table className="table userTable">
-              <thead><tr><th>Email</th><th>Username</th><th>Name</th><th>Role</th><th>Status</th><th>Setup</th></tr></thead>
-              <tbody>{users.map((u) => <tr key={u.id}><td>{u.email}</td><td>{u.username}</td><td>{u.displayName}</td><td><span className="pill">{u.role}</span></td><td>{u.status}</td><td><button className="smallButton secondary" onClick={() => u.email && sendSetup(u.email)}>Email</button></td></tr>)}</tbody>
+              <thead><tr><th>Email</th><th>Username</th><th>Name</th><th>Role</th><th>Status</th><th>Plan</th><th>Trial ends</th><th>Setup</th></tr></thead>
+              <tbody>{users.map((u) => <tr key={u.id}><td>{u.email}</td><td>{u.username}</td><td>{u.displayName}</td><td><span className="pill">{u.role}</span></td><td>{u.status}</td><td><span className="pill">{u.planStatus || "trialing"}</span></td><td>{u.trialEndsAt ? new Date(u.trialEndsAt).toLocaleDateString() : ""}</td><td><button className="smallButton secondary" onClick={() => u.email && sendSetup(u.email)}>Email</button></td></tr>)}</tbody>
             </table>
           </div>
         </section>

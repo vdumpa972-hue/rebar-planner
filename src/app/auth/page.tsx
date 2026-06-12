@@ -80,11 +80,16 @@ export default function AuthPage() {
 
     if (!snap.exists()) {
       dbRole = userEmail.toLowerCase() === OWNER_EMAIL ? "owner" : "user";
+      const trialEndsAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString();
       await setDoc(ref, {
         email: userEmail,
         username: userEmail.split("@")[0],
         role: dbRole,
         status: "active",
+        planStatus: dbRole === "owner" ? "owner" : "trialing",
+        planName: dbRole === "owner" ? "owner" : "trial",
+        trialStartedAt: new Date().toISOString(),
+        trialEndsAt,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       }, { merge: true });

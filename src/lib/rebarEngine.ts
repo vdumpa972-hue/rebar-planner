@@ -11,6 +11,8 @@ export type ScheduleLine = {
   totalUsedFeet: number;
   cutFeet: number;
   qty: number;
+  stockSource?: string;
+  wasteFit?: string;
 };
 
 export type SummaryLine = {
@@ -22,12 +24,33 @@ export type SummaryLine = {
   status: string;
 };
 
+export type WasteFit = {
+  mark: string;
+  location: string;
+  cutLength: string;
+  cutFeet: number;
+  qtyFit: number;
+  totalFitLength: string;
+};
+
+export type WastePiece = {
+  id: string;
+  sourceStickId: string;
+  size: string;
+  length: string;
+  lengthFeet: number;
+  possibleFits: WasteFit[];
+};
+
 export type MaterialTakeoff = {
   totalCut: string;
   stockLength: string;
   sticksToBuy: number;
   availableLength: string;
   waste: string;
+  wastePieceCount: number;
+  maxWastePiece: string;
+  wastePieces: WastePiece[];
   cutCount: number;
   bendCount: number;
   bentPieceCount: number;
@@ -40,6 +63,7 @@ export type RebarResult = {
   schedule: ScheduleLine[];
   summary: SummaryLine[];
   materialTakeoff: MaterialTakeoff;
+  validationWarnings?: string[];
 };
 
 export function parseFeet(value: string): number {
@@ -328,35 +352,184 @@ function summarize(schedule: ScheduleLine[]): SummaryLine[] {
   });
 }
 
+function getScheduleRebarSize(line: ScheduleLine): string {
+  const text = `${line.mark} ${line.prefix} ${line.location}`;
+  const match = text.match(/#\s*(\d{1,2})/);
+  return match ? `#${match[1]}` : "UNSPECIFIED";
+}
+
 function getMaterialTakeoff(schedule: ScheduleLine[], stockFeet: number): MaterialTakeoff {
   const cutLines = schedule.filter((line) => line.cutFeet > 0);
   const totalCutFeet = cutLines.reduce((sum, line) => sum + line.cutFeet * line.qty, 0);
   const cutCount = cutLines.reduce((sum, line) => sum + line.qty, 0);
+
   const bendCount = cutLines.reduce((sum, line) => {
     const functions = `${line.leftFunction} ${line.rightFunction}`.toLowerCase();
-    const bendsPerPiece = functions.includes("bent") ? 1 : 0;
-    return sum + bendsPerPiece * line.qty;
+    const bendMatches = functions.match(/bent|bend/g) || [];
+    return sum + bendMatches.length * line.qty;
   }, 0);
+
   const bentPieceCount = cutLines.reduce((sum, line) => {
     const functions = `${line.leftFunction} ${line.rightFunction}`.toLowerCase();
-    return sum + (functions.includes("bent") ? line.qty : 0);
+    return sum + (functions.includes("bent") || functions.includes("bend") ? line.qty : 0);
   }, 0);
   const straightPieceCount = Math.max(cutCount - bentPieceCount, 0);
-  const sticksToBuy = totalCutFeet > 0 ? Math.ceil(totalCutFeet / stockFeet) : 0;
 
-  // Stock-stick view: from the total sticks to buy, count how many can be
-  // used as a full straight stock stick with no cutting and no bending.
-  // Everything else is a stick that needs cutting, bending, or is partially used/waste.
-  const straightStockStickCount = cutLines.reduce((sum, line) => {
+  type StockPiece = {
+    cutFeet: number;
+    bent: boolean;
+    size: string;
+    line: ScheduleLine;
+    pieceIndex: number;
+  };
+
+  type StockStick = {
+    id: string;
+    usedFeet: number;
+    pieces: StockPiece[];
+  };
+
+  const pieces: StockPiece[] = [];
+  cutLines.forEach((line) => {
     const functions = `${line.leftFunction} ${line.rightFunction}`.toLowerCase();
-    const hasBent = functions.includes("bent");
-    const isFullStockLength = Math.abs(line.cutFeet - stockFeet) < 0.01;
-    return sum + (!hasBent && isFullStockLength ? line.qty : 0);
+    const bent = functions.includes("bent") || functions.includes("bend");
+    const qty = Math.max(Number(line.qty) || 1, 1);
+    const size = getScheduleRebarSize(line);
+    for (let index = 0; index < qty; index += 1) {
+      pieces.push({ cutFeet: line.cutFeet, bent, size, line, pieceIndex: index + 1 });
+    }
+    line.stockSource = "";
+    line.wasteFit = "";
+  });
+
+  // ORIGINAL STOCK PASS: one single first-fit-decreasing pass.
+  // This does NOT run a second optimization pass and does NOT consume waste pieces.
+  const stockSticks: StockStick[] = [];
+  pieces
+    .filter((piece) => piece.cutFeet > 0)
+    .sort((a, b) => b.cutFeet - a.cutFeet)
+    .forEach((piece) => {
+      const fit = piece.cutFeet <= stockFeet + 0.0001
+        ? stockSticks.find((stick) => stockFeet - stick.usedFeet + 0.0001 >= piece.cutFeet)
+        : undefined;
+      if (fit) {
+        fit.pieces.push(piece);
+        fit.usedFeet += piece.cutFeet;
+      } else {
+        const nextId = `STK-${String(stockSticks.length + 1).padStart(3, "0")}`;
+        stockSticks.push({ id: nextId, usedFeet: piece.cutFeet, pieces: [piece] });
+      }
+    });
+
+  const lineSources = new Map<string, Set<string>>();
+  stockSticks.forEach((stick) => {
+    stick.pieces.forEach((piece) => {
+      const key = piece.line.mark;
+      if (!lineSources.has(key)) lineSources.set(key, new Set<string>());
+      lineSources.get(key)?.add(stick.id);
+    });
+  });
+  cutLines.forEach((line) => {
+    const sources = Array.from(lineSources.get(line.mark) || []);
+    line.stockSource = sources.length ? sources.join(", ") : "New stock";
+  });
+
+  const sticksToBuy = stockSticks.length;
+  const straightStockStickCount = stockSticks.reduce((sum, stick) => {
+    const isOneFullStraightPiece =
+      stick.pieces.length === 1 &&
+      !stick.pieces[0].bent &&
+      Math.abs(stick.pieces[0].cutFeet - stockFeet) < 0.01;
+
+    return sum + (isOneFullStraightPiece ? 1 : 0);
   }, 0);
   const cutOrBentStockStickCount = Math.max(sticksToBuy - straightStockStickCount, 0);
 
+  const candidatePieces = cutLines
+    .filter((line) => line.cutFeet > 0)
+    .map((line) => ({
+      mark: line.mark,
+      location: line.location,
+      cutLength: line.cutLength,
+      cutFeet: line.cutFeet,
+      qty: Math.max(Number(line.qty) || 1, 1),
+      size: getScheduleRebarSize(line),
+    }));
+
+  const candidateQtyRemaining = new Map<string, number>();
+  candidatePieces.forEach((piece) => {
+    candidateQtyRemaining.set(piece.mark, piece.qty);
+  });
+
+  const wastePieces: WastePiece[] = stockSticks
+    .flatMap((stick, index): WastePiece[] => {
+      const leftoverFeet = Math.max(stockFeet - stick.usedFeet, 0);
+      if (leftoverFeet <= 0.0001) return [];
+      const sizes = Array.from(new Set(stick.pieces.map((piece) => piece.size))).sort().join("/") || "MIXED";
+      return [{
+        id: `WASTE-${String(index + 1).padStart(3, "0")}`,
+        sourceStickId: stick.id,
+        size: sizes,
+        length: formatFeet(leftoverFeet),
+        lengthFeet: leftoverFeet,
+        possibleFits: [],
+      }];
+    })
+    .sort((a, b) => b.lengthFeet - a.lengthFeet);
+
+  // PHASE 2 ANALYSIS ONLY:
+  // Build a suggested reuse plan from waste pieces without changing the original stock pass.
+  // Qty rows are expanded logically by keeping remaining quantity per schedule mark.
+  // Example: a 14' leftover can suggest 14 x 1' traverse pieces instead of just saying it can fit one row.
+  wastePieces.forEach((waste) => {
+    let remainingWasteFeet = waste.lengthFeet;
+    const wasteSizes = waste.size.split("/");
+    const fits: WasteFit[] = [];
+
+    candidatePieces
+      .filter((piece) => {
+        const sameSize = waste.size === "MIXED" || piece.size === waste.size || wasteSizes.includes(piece.size);
+        return sameSize && piece.cutFeet > 0 && piece.cutFeet <= remainingWasteFeet + 0.0001;
+      })
+      .sort((a, b) => a.cutFeet - b.cutFeet || a.mark.localeCompare(b.mark))
+      .forEach((piece) => {
+        const remainingQty = candidateQtyRemaining.get(piece.mark) || 0;
+        if (remainingQty <= 0 || piece.cutFeet <= 0 || piece.cutFeet > remainingWasteFeet + 0.0001) return;
+
+        const qtyFit = Math.min(remainingQty, Math.floor((remainingWasteFeet + 0.0001) / piece.cutFeet));
+        if (qtyFit <= 0) return;
+
+        fits.push({
+          mark: piece.mark,
+          location: piece.location,
+          cutLength: piece.cutLength,
+          cutFeet: piece.cutFeet,
+          qtyFit,
+          totalFitLength: formatFeet(qtyFit * piece.cutFeet),
+        });
+
+        candidateQtyRemaining.set(piece.mark, remainingQty - qtyFit);
+        remainingWasteFeet = Math.max(remainingWasteFeet - qtyFit * piece.cutFeet, 0);
+      });
+
+    waste.possibleFits = fits.slice(0, 12);
+  });
+
+  const lineWastePlans = new Map<string, string[]>();
+  wastePieces.forEach((waste) => {
+    waste.possibleFits.forEach((fit) => {
+      if (!lineWastePlans.has(fit.mark)) lineWastePlans.set(fit.mark, []);
+      lineWastePlans.get(fit.mark)?.push(`${fit.qtyFit}x from ${waste.id}/${waste.sourceStickId} (${waste.length} waste)`);
+    });
+  });
+  cutLines.forEach((line) => {
+    const plans = lineWastePlans.get(line.mark) || [];
+    line.wasteFit = plans.length ? plans.join("; ") : "";
+  });
+
+  const wasteFeet = wastePieces.reduce((sum, piece) => sum + piece.lengthFeet, 0);
+  const maxWastePieceFeet = wastePieces.reduce((max, piece) => Math.max(max, piece.lengthFeet), 0);
   const availableFeet = sticksToBuy * stockFeet;
-  const wasteFeet = Math.max(availableFeet - totalCutFeet, 0);
 
   return {
     totalCut: formatFeet(totalCutFeet),
@@ -364,6 +537,9 @@ function getMaterialTakeoff(schedule: ScheduleLine[], stockFeet: number): Materi
     sticksToBuy,
     availableLength: formatFeet(availableFeet),
     waste: formatFeet(wasteFeet),
+    wastePieceCount: wastePieces.length,
+    maxWastePiece: formatFeet(maxWastePieceFeet),
+    wastePieces,
     cutCount,
     bendCount,
     bentPieceCount,
@@ -612,6 +788,7 @@ export function generateRebarSchedule(params: {
     schedule,
     summary: summarize(schedule),
     materialTakeoff: getMaterialTakeoff(schedule, stockFeet),
+    validationWarnings: collectScheduleValidationWarnings(schedule, stockFeet),
   };
 }
 
@@ -661,6 +838,26 @@ function isNA(value?: string): boolean {
 function isBlankOrNA(value?: string): boolean {
   const clean = (value || "").trim().toLowerCase();
   return !clean || clean === "n/a" || clean === "na";
+}
+
+function isYes(value?: string): boolean {
+  return (value || "").trim().toLowerCase() === "yes";
+}
+
+function countBySpacing(clearRunFeet: number, spacingFeet: number): number {
+  if (!clearRunFeet || clearRunFeet <= 0 || !spacingFeet || spacingFeet <= 0) return 0;
+  // Bars/ties at both ends: 0, spacing, 2*spacing... until the run is covered.
+  // This intentionally uses floor + 1 so a 52' run at 18" spacing gives 42 pieces, not a doubled value.
+  return Math.floor(clearRunFeet / spacingFeet) + 1;
+}
+
+function makeSpacingNote(clearRunFeet: number, spacingFeet: number, label: string): string {
+  if (!clearRunFeet || !spacingFeet) return "";
+  return `${label} calculated from ${formatFeet(clearRunFeet)} clear run / ${formatFeet(spacingFeet)} spacing + 1`;
+}
+
+function getClearanceFeet(value?: string): number {
+  return isBlankOrNA(value) ? 0 : parseFeet(value || "");
 }
 
 function normalizedManualType(row: ManualRebarRowInput): string {
@@ -831,6 +1028,88 @@ function buildManualCheckLine(params: {
   }];
 }
 
+
+function uniqueWarnings(warnings: string[]): string[] {
+  return Array.from(new Set(warnings.map((warning) => warning.trim()).filter(Boolean)));
+}
+
+function collectManualValidationWarnings(params: {
+  rows: ManualRebarRowInput[];
+  stockFeet: number;
+  defaultOverlapFeet: number;
+  defaultBendFeet: number;
+}): string[] {
+  const warnings: string[] = [];
+  if (!params.rows.length) warnings.push("No rebar input rows found.");
+  if (!params.stockFeet || params.stockFeet <= 0) warnings.push("Stock stick length is missing or invalid.");
+  if (!params.defaultOverlapFeet || params.defaultOverlapFeet <= 0) warnings.push("Default overlap/lap length is missing or invalid.");
+
+  const baseRunFeet = totalBaseBottomRunFeet(params.rows);
+
+  params.rows.forEach((row, index) => {
+    const label = row.segment || row.itemType || `Row ${index + 1}`;
+    const type = normalizedManualType(row);
+    const rebarSize = (row.rebarSize || "").trim();
+    if (!rebarSize) warnings.push(`${label}: rebar size is missing.`);
+
+    if (type === "base/bottom rebar") {
+      const runFeet = parseFeet(row.length || "");
+      const count = parseCountValue(row.number, 0);
+      if (!runFeet) warnings.push(`${label}: bottom/base run length is missing.`);
+      if (!count) warnings.push(`${label}: longitudinal bar count is missing.`);
+      if (isYes(row.side1Bent) && !parseFeet(row.side1BentLength || "")) warnings.push(`${label}: side 1 is bent but bent overlap len is missing; default will be used.`);
+      if (isYes(row.side2Bent) && !parseFeet(row.side2BentLength || "")) warnings.push(`${label}: side 2 is bent but bent overlap len is missing; default will be used.`);
+      if (isBlankOrNA(row.traverseNumber) && !parseFeet(row.traverseSpacing || "")) warnings.push(`${label}: traverse count is N/A but traverse spacing is missing.`);
+      if ((parseCountValue(row.traverseNumber, 0) || parseFeet(row.traverseSpacing || "")) && !parseFeet(row.traverseLength || "")) warnings.push(`${label}: traverse pieces requested but traverse piece len is missing.`);
+    }
+
+    if (type === "horiz continues longtidues") {
+      if (!parseFeet(row.length || "")) warnings.push(`${label}: horizontal continuous run length is missing.`);
+      if (!parseCountValue(row.number, 0)) warnings.push(`${label}: horizontal continuous count is missing.`);
+    }
+
+    if (type === "vertical rebar") {
+      const enteredQty = parseCountValue(row.count, 0);
+      const spacingFeet = parseFeet(row.verticalSpacingAdjacent || "");
+      const runFeet = parseFeet(row.calcLength || "") || baseRunFeet;
+      const inferred = inferVerticalStraightFeet(row, params.rows);
+      if (!enteredQty && (!runFeet || !spacingFeet)) warnings.push(`${label}: vertical count is N/A; enter Calculate len/total run and spacing to calculate quantity.`);
+      if (!inferred.feet) warnings.push(`${label}: vertical bar straight len could not be calculated.`);
+    }
+
+    if (type === "pier") {
+      const pierCount = parseCountValue(row.duplicateTimes, parseCountValue(row.count, 0));
+      const diameterFeet = parseFeet(row.diameter || "");
+      const heightFeet = parseFeet(row.length || "");
+      const sideClearanceFeet = getClearanceFeet(row.clearanceSides);
+      const topClearanceFeet = getClearanceFeet(row.clearanceTop);
+      const bottomClearanceFeet = getClearanceFeet(row.clearanceBottom);
+      const clearHeightFeet = Math.max(heightFeet - topClearanceFeet - bottomClearanceFeet, 0);
+      const enteredHoopCount = parseCountValue(row.horizontalCircleCount, 0);
+      const hoopSpacingFeet = parseFeet(row.spacing || "");
+      if (!pierCount) warnings.push(`${label}: number of piers is missing.`);
+      if (!diameterFeet) warnings.push(`${label}: pier diameter is missing.`);
+      if (!heightFeet) warnings.push(`${label}: pier length/height is missing.`);
+      if (!sideClearanceFeet) warnings.push(`${label}: side spacing/clearance is missing; H-circle diameter may be wrong.`);
+      if (!enteredHoopCount && (!clearHeightFeet || !hoopSpacingFeet)) warnings.push(`${label}: Number of H-Circles is N/A; enter top/bottom spacing and H-circle spacing to calculate count.`);
+      if (!parseCountValue(row.numVerticalBars, 0)) warnings.push(`${label}: vertical bars count is missing.`);
+    }
+  });
+
+  return uniqueWarnings(warnings);
+}
+
+function collectScheduleValidationWarnings(schedule: ScheduleLine[], stockFeet: number): string[] {
+  const warnings: string[] = [];
+  schedule.forEach((line) => {
+    const fieldText = `${line.cutLength} ${line.fieldOrder}`.toLowerCase();
+    if (fieldText.includes("check")) warnings.push(`${line.mark}: ${line.fieldOrder}`);
+    if (line.cutFeet > stockFeet + 0.01) warnings.push(`${line.mark}: cut length ${formatFeet(line.cutFeet)} is longer than stock stick ${formatFeet(stockFeet)}.`);
+    if (line.cutFeet <= 0 && !line.cutLength.toLowerCase().includes("check")) warnings.push(`${line.mark}: no cut length calculated.`);
+  });
+  return uniqueWarnings(warnings);
+}
+
 export function generateManualRebarSchedule(params: {
   rows: ManualRebarRowInput[];
   stockLength: string;
@@ -842,6 +1121,12 @@ export function generateManualRebarSchedule(params: {
   const stockFeet = parseFeet(params.stockLength) || 20;
   const overlapFeet = parseFeet(params.defaultOverlap) || 2;
   const defaultBendFeet = parseFeet(params.defaultVerticalToBase) || 0.5;
+  const inputValidationWarnings = collectManualValidationWarnings({
+    rows: params.rows,
+    stockFeet,
+    defaultOverlapFeet: overlapFeet,
+    defaultBendFeet,
+  });
   const schedule: ScheduleLine[] = [];
   const baseBottomTotalRunFeet = totalBaseBottomRunFeet(params.rows);
 
@@ -886,14 +1171,14 @@ export function generateManualRebarSchedule(params: {
         const enteredTraverseQty = parseCountValue(row.traverseNumber, 0);
         const traverseSpacingFeet = parseFeet(row.traverseSpacing || "");
         const calculatedTraverseQty = !enteredTraverseQty && isBaseBottom && baseStraightFeet > 0 && traverseSpacingFeet > 0
-          ? Math.floor(baseStraightFeet / traverseSpacingFeet) + 1
+          ? countBySpacing(baseStraightFeet, traverseSpacingFeet)
           : 0;
         const traverseQty = enteredTraverseQty || calculatedTraverseQty;
         const traverseFeet = parseFeet(row.traverseLength || "");
         schedule.push(...buildManualSimplePieces({
           mark: `${segment}_D${duplicateIndex + 1}_TRAVERSE`,
           prefix: `${segment}_D${duplicateIndex + 1}_TRAVERSE`,
-          location: `${row.segment || segment} ${duplicateLabel} traverse bars ${rebarSize}${row.traverseSpacing ? ` @ ${row.traverseSpacing}` : ""}${calculatedTraverseQty ? " (qty calculated from run length / spacing + 1 because Number is N/A)" : ""}`,
+          location: `${row.segment || segment} ${duplicateLabel} traverse bars ${rebarSize}${row.traverseSpacing ? ` @ ${row.traverseSpacing}` : ""}${calculatedTraverseQty ? ` (${makeSpacingNote(baseStraightFeet, traverseSpacingFeet, "qty")}; Number is N/A)` : ""}`,
           qty: traverseQty,
           cutFeet: traverseFeet,
           leftFunction: "straight traverse start",
@@ -909,14 +1194,14 @@ export function generateManualRebarSchedule(params: {
       const enteredQty = parseCountValue(row.count, 0);
       const runFeet = parseFeet(row.calcLength || "") || baseBottomTotalRunFeet;
       const calculatedQty = !enteredQty && isBlankOrNA(row.count) && runFeet > 0 && spacingFeet > 0
-        ? Math.floor(runFeet / spacingFeet) + 1
+        ? countBySpacing(runFeet, spacingFeet)
         : 0;
       const qty = enteredQty ? enteredQty * duplicateTimes : calculatedQty;
       const inferredVertical = inferVerticalStraightFeet(row, params.rows);
       const straightFeet = inferredVertical.feet;
       const side1BendFeet = (row.side1Bent || "").toLowerCase() === "yes" ? (parseFeet(row.side1BentLength || "") || defaultBendFeet) : 0;
       const side2BendFeet = (row.side2Bent || "").toLowerCase() === "yes" ? (parseFeet(row.side2BentLength || "") || defaultBendFeet) : 0;
-      const verticalLocation = `${row.segment || segment} vertical/L bars ${rebarSize}${row.verticalSpacingAdjacent ? ` @ ${row.verticalSpacingAdjacent}` : ""}${calculatedQty ? `, qty calculated from ${formatFeet(runFeet)} total bottom run / spacing + 1` : ""}${enteredQty && duplicateTimes > 1 ? `, duplicated ${duplicateTimes} sides` : ""}${inferredVertical.note}`;
+      const verticalLocation = `${row.segment || segment} vertical/L bars ${rebarSize}${row.verticalSpacingAdjacent ? ` @ ${row.verticalSpacingAdjacent}` : ""}${calculatedQty ? `, ${makeSpacingNote(runFeet, spacingFeet, "qty")}` : ""}${enteredQty && duplicateTimes > 1 ? `, duplicated ${duplicateTimes} sides` : ""}${inferredVertical.note}`;
       if (!qty || !straightFeet) {
         schedule.push(...buildManualCheckLine({
           mark: `${segment}_VERT_CHECK`,
@@ -943,15 +1228,15 @@ export function generateManualRebarSchedule(params: {
       const pierCount = parseCountValue(row.duplicateTimes, parseCountValue(row.count, 1));
       const diameterFeet = parseFeet(row.diameter || "");
       const heightFeet = parseFeet(row.length || "");
-      const topClearanceFeet = isBlankOrNA(row.clearanceTop) ? 0 : parseFeet(row.clearanceTop || "");
-      const bottomClearanceFeet = isBlankOrNA(row.clearanceBottom) ? 0 : parseFeet(row.clearanceBottom || "");
-      const sideClearanceFeet = isBlankOrNA(row.clearanceSides) ? 0 : parseFeet(row.clearanceSides || "");
+      const topClearanceFeet = getClearanceFeet(row.clearanceTop);
+      const bottomClearanceFeet = getClearanceFeet(row.clearanceBottom);
+      const sideClearanceFeet = getClearanceFeet(row.clearanceSides);
       const clearHeightFeet = heightFeet > 0 ? Math.max(heightFeet - topClearanceFeet - bottomClearanceFeet, 0) : 0;
 
       const enteredHoopCount = parseCountValue(row.horizontalCircleCount, 0);
       const hoopSpacingFeet = parseFeet(row.spacing || "");
       const calculatedHoopCount = !enteredHoopCount && isBlankOrNA(row.horizontalCircleCount) && clearHeightFeet > 0 && hoopSpacingFeet > 0
-        ? Math.floor(clearHeightFeet / hoopSpacingFeet) + 1
+        ? countBySpacing(clearHeightFeet, hoopSpacingFeet)
         : 0;
       const hoopCount = enteredHoopCount || calculatedHoopCount;
 
@@ -961,7 +1246,7 @@ export function generateManualRebarSchedule(params: {
       const hoopOverlapFeet = 2 / 12;
       const hoopCutFeet = hoopDiameterFeet > 0 ? Math.PI * hoopDiameterFeet + hoopOverlapFeet : 0;
 
-      const hoopLocation = `${row.segment || segment} pier H-circles/hoops ${rebarSize}: qty ${hoopCount || "CHECK"} per pier x ${pierCount || "CHECK"} piers; hoop diameter = pier diameter ${row.diameter || "missing"}${sideClearanceFeet ? ` - 2 x side spacing ${row.clearanceSides}` : ""} = ${hoopDiameterFeet ? formatFeet(hoopDiameterFeet) : "CHECK"}; circle cut = circumference plus 2" overlap${row.spacing ? `; vertical spacing ${row.spacing}` : ""}${calculatedHoopCount ? `; H-circle qty calculated from clear height ${formatFeet(clearHeightFeet)} / spacing + 1` : ""}`;
+      const hoopLocation = `${row.segment || segment} pier H-circles/hoops ${rebarSize}: qty ${hoopCount || "CHECK"} per pier x ${pierCount || "CHECK"} piers; hoop diameter = pier diameter ${row.diameter || "missing"}${sideClearanceFeet ? ` - 2 x side spacing ${row.clearanceSides}` : ""} = ${hoopDiameterFeet ? formatFeet(hoopDiameterFeet) : "CHECK"}; circle cut = circumference plus 2" overlap${row.spacing ? `; vertical spacing ${row.spacing}` : ""}${calculatedHoopCount ? `; ${makeSpacingNote(clearHeightFeet, hoopSpacingFeet, "H-circle qty")}` : ""}`;
       if (!pierCount || !hoopCount || !hoopCutFeet) {
         schedule.push(...buildManualCheckLine({
           mark: `${segment}_PIER_HCIRC_CHECK`,
@@ -1018,9 +1303,15 @@ export function generateManualRebarSchedule(params: {
     }));
   }
 
+  const validationWarnings = uniqueWarnings([
+    ...inputValidationWarnings,
+    ...collectScheduleValidationWarnings(schedule, stockFeet),
+  ]);
+
   return {
     schedule,
     summary: summarize(schedule),
     materialTakeoff: getMaterialTakeoff(schedule, stockFeet),
+    validationWarnings,
   };
 }
