@@ -2817,7 +2817,7 @@ export default function Home() {
     downloadExcelWorkbook();
   }
 
-  function xmlEscape(value: unknown) {
+  function xlsxEscape(value: unknown) {
     return String(value ?? "")
       .replaceAll("&", "&amp;")
       .replaceAll("<", "&lt;")
@@ -2825,43 +2825,329 @@ export default function Home() {
       .replaceAll('"', "&quot;");
   }
 
-  function xmlCell(value: unknown, styleId = "DataCell") {
-    return `<Cell ss:StyleID="${styleId}"><Data ss:Type="String">${xmlEscape(value)}</Data></Cell>`;
+  function sheetNameSafe(name: string) {
+    return name.replaceAll("&", "and").replace(/[\\/?*\[\]:]/g, " ").slice(0, 31);
   }
 
-  function excelRow(cells: unknown[], styleId = "DataCell", keyColumnCount = 5) {
-    return `<Row>${cells
-      .map((cell, index) => xmlCell(cell, index < keyColumnCount ? `${styleId}Key` : styleId))
-      .join("")}</Row>`;
+  function shapeSymbolForLine(line: ScheduleLine) {
+    const type = getPieceSketchType(line);
+    if (type === "circle") return "○";
+    if (type === "lbar") return "└";
+    if (type === "u") return "└─┘";
+    if (type === "leftBent") return "└─";
+    if (type === "rightBent") return "─┘";
+    if (type === "traverse") return "═";
+    return "─";
+  }
+
+  function shapeNameForLine(line: ScheduleLine) {
+    const type = getPieceSketchType(line);
+    if (type === "circle") return "Circular hoop";
+    if (type === "lbar") return "L bar";
+    if (type === "u") return "Bent both ends";
+    if (type === "leftBent") return "Bent start end";
+    if (type === "rightBent") return "Bent finish end";
+    if (type === "traverse") return "Double/traverse bar";
+    return "Straight bar";
+  }
+
+  const summaryExportHeader = [
+    "Shape",
+    "Shape Name",
+    "Size",
+    "Total Qty",
+    "Cut Len",
+    "Start Function",
+    "Used",
+    "Finish Function",
+    "Sample Piece",
+    "Sample Location",
+  ];
+
+  function summaryExportRows() {
+    return fabricationBatchList.map((batch) => [
+      shapeSymbolForLine(batch.sampleLine),
+      shapeNameForLine(batch.sampleLine),
+      batch.size,
+      batch.qty,
+      batch.cutLength,
+      batch.leftFunction,
+      batch.usedLength,
+      batch.rightFunction,
+      batch.sampleMark,
+      batch.sampleLocation,
+    ]);
+  }
+
+  function excelColumnName(index: number) {
+    let name = "";
+    let current = index + 1;
+    while (current > 0) {
+      const remainder = (current - 1) % 26;
+      name = String.fromCharCode(65 + remainder) + name;
+      current = Math.floor((current - 1) / 26);
+    }
+    return name;
+  }
+
+  function xlsxCell(value: unknown, rowNumber: number, columnIndex: number, styleId: number) {
+    const ref = `${excelColumnName(columnIndex)}${rowNumber}`;
+    return `<c r="${ref}" s="${styleId}" t="inlineStr"><is><t>${xlsxEscape(value)}</t></is></c>`;
+  }
+
+  function xlsxRow(cells: unknown[], rowNumber: number, stylePicker: (columnIndex: number) => number) {
+    return `<row r="${rowNumber}" ht="15" customHeight="1">${cells
+      .map((cell, columnIndex) => xlsxCell(cell, rowNumber, columnIndex, stylePicker(columnIndex)))
+      .join("")}</row>`;
+  }
+
+  function xlsxSheetXml(rows: unknown[][], columnWidths: number[], keyColumnCount: number, summaryStartRow?: number) {
+    const cols = columnWidths
+      .map((width, index) => `<col min="${index + 1}" max="${index + 1}" width="${width}" customWidth="1"/>`)
+      .join("");
+    const sheetRows = rows
+      .map((row, index) => {
+        const rowNumber = index + 1;
+        const isHeader = rowNumber === 1 || (summaryStartRow ? rowNumber === summaryStartRow : false);
+        const isSummary = summaryStartRow ? rowNumber > summaryStartRow : false;
+        return xlsxRow(row, rowNumber, (columnIndex) => {
+          if (isHeader) return columnIndex < keyColumnCount ? 1 : 2;
+          if (isSummary) return columnIndex < 1 ? 6 : 5;
+          return columnIndex < keyColumnCount ? 3 : 4;
+        });
+      })
+      .join("");
+    return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>
+  <cols>${cols}</cols>
+  <sheetData>${sheetRows}</sheetData>
+</worksheet>`;
+  }
+
+  function xlsxStylesXml() {
+    return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <fonts count="4">
+    <font><sz val="10"/><name val="Calibri"/></font>
+    <font><b/><sz val="11"/><color rgb="FFFFFFFF"/><name val="Calibri"/></font>
+    <font><b/><sz val="10"/><name val="Calibri"/></font>
+    <font><b/><sz val="12"/><color rgb="FFFFFFFF"/><name val="Calibri"/></font>
+  </fonts>
+  <fills count="7">
+    <fill><patternFill patternType="none"/></fill>
+    <fill><patternFill patternType="gray125"/></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="FF8064A2"/><bgColor indexed="64"/></patternFill></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="FF1F4E79"/><bgColor indexed="64"/></patternFill></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="FFEADCF8"/><bgColor indexed="64"/></patternFill></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="FFD9EAF7"/><bgColor indexed="64"/></patternFill></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="FFB7DEE8"/><bgColor indexed="64"/></patternFill></fill>
+  </fills>
+  <borders count="2">
+    <border><left/><right/><top/><bottom/><diagonal/></border>
+    <border><left style="thin"><color auto="1"/></left><right style="thin"><color auto="1"/></right><top style="thin"><color auto="1"/></top><bottom style="thin"><color auto="1"/></bottom><diagonal/></border>
+  </borders>
+  <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
+  <cellXfs count="7">
+    <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>
+    <xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="left" vertical="center" wrapText="0"/></xf>
+    <xf numFmtId="0" fontId="1" fillId="3" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="left" vertical="center" wrapText="0"/></xf>
+    <xf numFmtId="0" fontId="2" fillId="4" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="left" vertical="center" wrapText="0"/></xf>
+    <xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1" applyAlignment="1"><alignment horizontal="left" vertical="center" wrapText="0"/></xf>
+    <xf numFmtId="0" fontId="3" fillId="3" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="left" vertical="center" wrapText="0"/></xf>
+    <xf numFmtId="0" fontId="2" fillId="5" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="left" vertical="center" wrapText="0"/></xf>
+  </cellXfs>
+  <cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
+</styleSheet>`;
+  }
+
+  function crc32(bytes: Uint8Array) {
+    let crc = 0xffffffff;
+    for (let i = 0; i < bytes.length; i += 1) {
+      crc ^= bytes[i];
+      for (let j = 0; j < 8; j += 1) {
+        crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
+      }
+    }
+    return (crc ^ 0xffffffff) >>> 0;
+  }
+
+  function uint16(value: number) {
+    return [value & 255, (value >>> 8) & 255];
+  }
+
+  function uint32(value: number) {
+    return [value & 255, (value >>> 8) & 255, (value >>> 16) & 255, (value >>> 24) & 255];
+  }
+
+  function zipBlob(entries: { name: string; content: string }[]) {
+    const encoder = new TextEncoder();
+    const chunks: Uint8Array[] = [];
+    const centralChunks: Uint8Array[] = [];
+    let offset = 0;
+    const now = new Date();
+    const dosTime = (now.getHours() << 11) | (now.getMinutes() << 5) | Math.floor(now.getSeconds() / 2);
+    const dosDate = ((now.getFullYear() - 1980) << 9) | ((now.getMonth() + 1) << 5) | now.getDate();
+
+    entries.forEach((entry) => {
+      const nameBytes = encoder.encode(entry.name);
+      const dataBytes = encoder.encode(entry.content);
+      const crc = crc32(dataBytes);
+      const localHeader = new Uint8Array([
+        ...uint32(0x04034b50),
+        ...uint16(20),
+        ...uint16(0),
+        ...uint16(0),
+        ...uint16(dosTime),
+        ...uint16(dosDate),
+        ...uint32(crc),
+        ...uint32(dataBytes.length),
+        ...uint32(dataBytes.length),
+        ...uint16(nameBytes.length),
+        ...uint16(0),
+      ]);
+      chunks.push(localHeader, nameBytes, dataBytes);
+      const centralHeader = new Uint8Array([
+        ...uint32(0x02014b50),
+        ...uint16(20),
+        ...uint16(20),
+        ...uint16(0),
+        ...uint16(0),
+        ...uint16(dosTime),
+        ...uint16(dosDate),
+        ...uint32(crc),
+        ...uint32(dataBytes.length),
+        ...uint32(dataBytes.length),
+        ...uint16(nameBytes.length),
+        ...uint16(0),
+        ...uint16(0),
+        ...uint16(0),
+        ...uint16(0),
+        ...uint32(0),
+        ...uint32(offset),
+      ]);
+      centralChunks.push(centralHeader, nameBytes);
+      offset += localHeader.length + nameBytes.length + dataBytes.length;
+    });
+
+    const centralOffset = offset;
+    const centralSize = centralChunks.reduce((sum, chunk) => sum + chunk.length, 0);
+    const endRecord = new Uint8Array([
+      ...uint32(0x06054b50),
+      ...uint16(0),
+      ...uint16(0),
+      ...uint16(entries.length),
+      ...uint16(entries.length),
+      ...uint32(centralSize),
+      ...uint32(centralOffset),
+      ...uint16(0),
+    ]);
+    const blobParts: BlobPart[] = [...chunks, ...centralChunks, endRecord].map((chunk) => {
+      const copy = new ArrayBuffer(chunk.byteLength);
+      new Uint8Array(copy).set(chunk);
+      return copy;
+    });
+
+    return new Blob(blobParts, {
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
   }
 
   function downloadExcelWorkbook() {
-    const pieceRows = scheduleExportRows();
-    const workbook = `<?xml version="1.0"?><?mso-application progid="Excel.Sheet"?>
-<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">
-<Styles>
-  <Style ss:ID="Header"><Font ss:Bold="1" ss:Color="#FFFFFF" ss:Size="12"/><Interior ss:Color="#1F4E79" ss:Pattern="Solid"/><Alignment ss:Horizontal="Left" ss:Vertical="Center" ss:WrapText="1"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="2"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders></Style>
-  <Style ss:ID="HeaderKey"><Font ss:Bold="1" ss:Color="#FFFFFF" ss:Size="12"/><Interior ss:Color="#8064A2" ss:Pattern="Solid"/><Alignment ss:Horizontal="Left" ss:Vertical="Center" ss:WrapText="1"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="2"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders></Style>
-  <Style ss:ID="DataCell"><Alignment ss:Horizontal="Left" ss:Vertical="Center" ss:WrapText="1"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders></Style>
-  <Style ss:ID="DataCellKey"><Font ss:Bold="1"/><Interior ss:Color="#EADCF8" ss:Pattern="Solid"/><Alignment ss:Horizontal="Left" ss:Vertical="Center" ss:WrapText="1"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders></Style>
-  <Style ss:ID="SummaryTitle"><Font ss:Bold="1" ss:Size="14" ss:Color="#FFFFFF"/><Interior ss:Color="#1F4E79" ss:Pattern="Solid"/><Alignment ss:Horizontal="Left" ss:Vertical="Center"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="2"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="2"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="2"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="2"/></Borders></Style>
-  <Style ss:ID="SummaryCell"><Font ss:Bold="1"/><Interior ss:Color="#D9EAF7" ss:Pattern="Solid"/><Alignment ss:Horizontal="Left" ss:Vertical="Center" ss:WrapText="1"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders></Style>
-  <Style ss:ID="SummaryValue"><Alignment ss:Horizontal="Left" ss:Vertical="Center"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders></Style>
-</Styles>
-<Worksheet ss:Name="Rebar Schedule">
-<Table>
-  <Column ss:Width="95"/><Column ss:Width="115"/><Column ss:Width="210"/><Column ss:Width="115"/><Column ss:Width="230"/><Column ss:Width="110"/><Column ss:Width="210"/><Column ss:Width="380"/><Column ss:Width="140"/><Column ss:Width="420"/>
-  ${excelRow(exportHeader, "Header")}
-  ${pieceRows.map((row) => excelRow(row, "DataCell")).join("")}
-</Table>
-<WorksheetOptions xmlns="urn:schemas-microsoft-com:office:excel"><FreezePanes/><FrozenNoSplit/><SplitHorizontal>1</SplitHorizontal><TopRowBottomPane>1</TopRowBottomPane><ActivePane>2</ActivePane></WorksheetOptions>
-</Worksheet>
-</Workbook>`;
-    const blob = new Blob([workbook], { type: "application/vnd.ms-excel;charset=utf-8;" });
+    const summaryRows = summaryExportRows();
+    const fullRows = schedule.map((line) => [
+      shapeSymbolForLine(line),
+      shapeNameForLine(line),
+      line.qty,
+      line.cutLength,
+      line.leftFunction,
+      line.usedLength,
+      line.rightFunction,
+      line.stockSource || "",
+      line.wasteFit || "",
+      reviewedPieceMarks.includes(line.mark) ? "Reviewed" : "Not reviewed",
+      line.mark,
+      line.location,
+      line.requiredLength,
+      line.fieldOrder,
+    ]);
+    const fullHeader = [
+      "Shape",
+      "Shape Name",
+      "Qty",
+      "Cut Len",
+      "Start Function",
+      "Used",
+      "Finish Function",
+      "Stock Source",
+      "Waste Fit",
+      "Reviewed",
+      "Piece ID",
+      "Location",
+      "Required Len",
+      "Field Order",
+    ];
+    const materialRows = materialSummaryRows();
+    const summarySheetRows = [summaryExportHeader, ...summaryRows, [], ...materialRows];
+    const summaryStartRow = summaryRows.length + 3;
+    const fullSheetRows = [fullHeader, ...fullRows];
+    const summaryName = sheetNameSafe("Rebar Schedule Output");
+    const fullName = sheetNameSafe("Full Cut List");
+
+    const entries = [
+      {
+        name: "[Content_Types].xml",
+        content: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
+</Types>`,
+      },
+      {
+        name: "_rels/.rels",
+        content: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>`,
+      },
+      {
+        name: "xl/workbook.xml",
+        content: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>
+    <sheet name="${xlsxEscape(summaryName)}" sheetId="1" r:id="rId1"/>
+    <sheet name="${xlsxEscape(fullName)}" sheetId="2" r:id="rId2"/>
+  </sheets>
+</workbook>`,
+      },
+      {
+        name: "xl/_rels/workbook.xml.rels",
+        content: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/>
+  <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>`,
+      },
+      { name: "xl/styles.xml", content: xlsxStylesXml() },
+      {
+        name: "xl/worksheets/sheet1.xml",
+        content: xlsxSheetXml(summarySheetRows, [8, 18, 10, 10, 12, 24, 12, 24, 18, 38], 4, summaryStartRow),
+      },
+      {
+        name: "xl/worksheets/sheet2.xml",
+        content: xlsxSheetXml(fullSheetRows, [8, 18, 8, 10, 24, 12, 24, 16, 18, 14, 18, 38, 14, 14], 4),
+      },
+    ];
+    const blob = zipBlob(entries);
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = `${projectName.replaceAll(" ", "-").toLowerCase()}-rebar-schedule.xls`;
+    link.download = `${projectName.replaceAll(" ", "-").toLowerCase()}-rebar-schedule.xlsx`;
     link.click();
     URL.revokeObjectURL(url);
   }
@@ -3434,7 +3720,7 @@ export default function Home() {
     { step: "2", title: "Review plan", detail: "Use the small/medium/large PDF viewer and crop proof areas." },
     { step: "3", title: "Enter rebar", detail: "Use the manual rows and the diagram guide to describe each rebar system." },
     { step: "4", title: "Generate", detail: "Build the schedule, cut list, stock takeoff, and piece sketches." },
-    { step: "5", title: "Review + export", detail: "Mark pieces reviewed and download the shop-ready CSV." },
+    { step: "5", title: "Review + export", detail: "Mark pieces reviewed and download the shop-ready Excel file." },
   ];
 
   const stage10CommercialModules = [
@@ -3465,7 +3751,7 @@ export default function Home() {
     { label: "Project workflow", done: Boolean(projectName && planFileName), note: projectName && planFileName ? "Project and PDF are attached." : "Add a project name and PDF to complete this step." },
     { label: "Rebar input", done: rebarInfoRows.length > 0, note: rebarInfoRows.length ? `${rebarInfoRows.length} manual rebar row${rebarInfoRows.length === 1 ? "" : "s"} entered.` : "Add at least one rebar row." },
     { label: "Schedule package", done: schedule.length > 0, note: schedule.length ? `${schedule.length} schedule line${schedule.length === 1 ? "" : "s"} generated and saved with the project.` : "Generate the schedule." },
-    { label: "Export", done: schedule.length > 0, note: "CSV export is available from the schedule area." },
+    { label: "Export", done: schedule.length > 0, note: "Excel export is available from the schedule area." },
   ];
 
   const stage10DoneCount = stage10LaunchChecklist.filter((item) => item.done).length;
@@ -3508,7 +3794,7 @@ export default function Home() {
     { label: "Owner-only advanced view", ready: isOwner, detail: isOwner ? "Visible for owner account." : "Hidden from user/admin commercial workflow." },
     { label: "Simple user workflow", ready: true, detail: "Normal users stay in the simplified PDF + manual input + schedule workflow." },
     { label: "Saved schedule", ready: Boolean(savedScheduleAt), detail: savedScheduleAt ? `Last saved ${new Date(savedScheduleAt).toLocaleString()}` : "Generate once to save the current schedule with the project." },
-    { label: "Export package", ready: schedule.length > 0, detail: schedule.length ? "CSV/Excel-compatible shop list is available." : "Generate schedule to enable export." },
+    { label: "Export package", ready: schedule.length > 0, detail: schedule.length ? "Two-sheet Excel-compatible shop list is available." : "Generate schedule to enable export." },
   ];
 
 
@@ -5333,7 +5619,7 @@ export default function Home() {
                 disabled={schedule.length === 0}
                 className="rounded bg-green-700 px-4 py-2 font-semibold text-white hover:bg-green-800 disabled:bg-gray-400"
               >
-                Download CSV <InfoTip text="Downloads the schedule as a formatted Excel-compatible file." />
+                Download Excel <InfoTip text="Downloads a real two-sheet .xlsx workbook: summary batches and full cut list." />
               </button>
               <button
                 type="button"
