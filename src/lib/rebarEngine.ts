@@ -1144,6 +1144,10 @@ export function generateManualRebarSchedule(params: {
       const duplicateTimes = parseCountValue(row.duplicateTimes, isBaseBottom ? 2 : 1);
       const baseStraightFeet = parseFeet(row.length || "");
       const spacingFeet = parseFeet(row.spacingBetween || "");
+      const sideClearanceFeet = isBaseBottom ? getClearanceFeet(row.clearanceSides) : 0;
+      const clearStraightBaseFeet = isBaseBottom
+        ? Math.max(baseStraightFeet - sideClearanceFeet * 2, 0)
+        : baseStraightFeet;
       const leftBendFeet = manualEndExtra(row, 1, overlapFeet);
       const rightBendFeet = manualEndExtra(row, 2, overlapFeet);
 
@@ -1154,12 +1158,15 @@ export function generateManualRebarSchedule(params: {
           const locationAdjustment = isBaseBottom
             ? (leftBendFeet > 0 ? offsetFeet : 0) + (rightBendFeet > 0 ? offsetFeet : 0)
             : 0;
-          const straightFeet = Math.max(baseStraightFeet - locationAdjustment, 0);
+          const straightFeet = Math.max(clearStraightBaseFeet - locationAdjustment, 0);
           const positionName = barCount === 1 ? "single" : barIndex === 0 ? "outer" : barIndex === barCount - 1 ? "inner" : `middle ${barIndex}`;
+          const clearanceNote = isBaseBottom && sideClearanceFeet > 0
+            ? `, straight run ${formatFeet(baseStraightFeet)} minus 2 x side clearance ${formatFeet(sideClearanceFeet)} = ${formatFeet(clearStraightBaseFeet)}`
+            : "";
           schedule.push(...buildManualContinuousRun({
             markBase: `${segment}_D${duplicateIndex + 1}_CONT_${barIndex + 1}`,
             prefix: `${segment}_D${duplicateIndex + 1}_CONT_${barIndex + 1}`,
-            location: `${row.segment || segment} ${duplicateLabel} ${positionName} ${rebarSize} continuous bar${spacingFeet ? `, offset ${formatFeet(offsetFeet)} from outside` : ""}`,
+            location: `${row.segment || segment} ${duplicateLabel} ${positionName} ${rebarSize} continuous bar${spacingFeet ? `, offset ${formatFeet(offsetFeet)} from outside` : ""}${clearanceNote}`,
             straightFeet,
             stockFeet,
             overlapFeet,

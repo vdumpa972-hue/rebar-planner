@@ -613,6 +613,7 @@ export default function Home() {
   const [activeDiagramType, setActiveDiagramType] = useState<RebarInfoType>("Base/Bottom rebar");
   const [newEmptyRowIds, setNewEmptyRowIds] = useState<string[]>([]);
   const [reviewedPieceMarks, setReviewedPieceMarks] = useState<string[]>([]);
+  const [lengthUnitErrorFields, setLengthUnitErrorFields] = useState<string[]>([]);
   const backupImportInputRef = useRef<HTMLInputElement | null>(null);
 
 
@@ -811,17 +812,28 @@ export default function Home() {
     }
     setWorkspaceStatus("Saving project files to Storage...");
     try {
-      const projectId = currentProjectId || `${user.uid}-${Date.now()}`;
+      let projectId = currentProjectId || "";
       const cleanProjectName = projectName.trim();
       if (!cleanProjectName) {
         setWorkspaceStatus("Save failed: project name is required.");
         return;
       }
       const existingSnaps = await getDocs(query(collection(db, "plannerProjects"), orderBy("updatedAt", "desc")));
-      const duplicateProject = existingSnaps.docs
+      const sameNameProject = existingSnaps.docs
         .map((projectSnap) => ({ id: projectSnap.id, ...(projectSnap.data() as Partial<PlannerWorkspace> & { ownerUid?: string }) }))
-        .find((project) => project.ownerUid === user.uid && project.id !== projectId && (project.projectName || "").trim().toLowerCase() === cleanProjectName.toLowerCase());
-      if (duplicateProject) {
+        .find((project) => project.ownerUid === user.uid && (project.projectName || "").trim().toLowerCase() === cleanProjectName.toLowerCase());
+
+      if (!projectId && sameNameProject) {
+        projectId = sameNameProject.id;
+        setCurrentProjectId(projectId);
+        setWorkspaceStatus(`Saving changes to existing project "${cleanProjectName}"...`);
+      }
+
+      if (!projectId) {
+        projectId = `${user.uid}-${Date.now()}`;
+      }
+
+      if (sameNameProject && sameNameProject.id !== projectId) {
         setWorkspaceStatus(`Save blocked: another project already uses the name "${cleanProjectName}". Rename this project or delete the duplicate first.`);
         return;
       }
@@ -1417,7 +1429,6 @@ export default function Home() {
   const fabricationBatchList = useMemo(() => {
     const batches = new Map<string, {
       key: string;
-      category: string;
       size: string;
       qty: number;
       cutLength: string;
@@ -1430,9 +1441,8 @@ export default function Home() {
     }>();
 
     for (const line of filteredSchedule) {
-      const category = getScheduleCategoryLabel(getScheduleCategory(line));
       const size = getScheduleRebarSizeLabel(line);
-      const key = [category, size, line.cutLength, line.leftFunction, line.usedLength, line.rightFunction].join("__");
+      const key = [size, line.cutLength, line.leftFunction, line.usedLength, line.rightFunction].join("__");
       const existing = batches.get(key);
       if (existing) {
         existing.qty += line.qty;
@@ -1440,7 +1450,6 @@ export default function Home() {
       }
       batches.set(key, {
         key,
-        category,
         size,
         qty: line.qty,
         cutLength: line.cutLength,
@@ -1454,8 +1463,6 @@ export default function Home() {
     }
 
     return Array.from(batches.values()).sort((a, b) => {
-      const categoryCompare = a.category.localeCompare(b.category);
-      if (categoryCompare) return categoryCompare;
       const sizeCompare = a.size.localeCompare(b.size);
       if (sizeCompare) return sizeCompare;
       return parseFeet(b.cutLength) - parseFeet(a.cutLength);
@@ -1574,7 +1581,7 @@ export default function Home() {
       return "Horizontal continuous bars: use the entered length, count, spacing, end bends, stock stick length, and required overlap/lap splice when splitting long runs.";
     }
     if (row.itemType === "Vertical Rebar") {
-      return "Vertical/L bars: enter Count manually, or enter N/A and the app calculates quantity from Calculate len / total run divided by spacing + 1. If Calculate len is blank, the app uses total base/bottom run length, for example 52' x 2 + 13'-4\" x 2. Enter Bar straight len for the straight vertical part, and Side 1/Side 2 bend lengths for the L bend legs.";
+      return "Vertical/L bars: enter Count manually, or enter N/A and the app calculates quantity from Calculate len / total run divided by spacing + 1. If Calculate len is blank, the app uses total base/bottom run length, for example 52' x 2 + 13'-4\" x 2. Enter Bar straight len for the straight vertical part, and Start end / Finish end bend lengths for the L bend legs.";
     }
     if (row.itemType === "Pier") {
       return "Pier bars: Number of piers multiplies the whole pier cage. H-circle/hoop diameter = pier diameter minus side clearance on both sides. H-circle count can be entered, or set to N/A so the app calculates from clear vertical height: pier length minus top clearance minus bottom clearance, divided by H-circle spacing + 1. Pier vertical L bar straight length = pier length minus top/bottom clearance, then add the vertical bent length when Vertical bent is Yes.";
@@ -1666,6 +1673,7 @@ export default function Home() {
 
   function updateRebarInfoRow(id: string, key: keyof RebarInfoRow, value: string) {
     setNewEmptyRowIds((ids) => ids.filter((rowId) => rowId !== id));
+    setLengthUnitErrorFields((keys) => keys.filter((errorKey) => errorKey !== rowFieldErrorKey(id, key)));
     setRebarInfoRows((current) => current.map((row) => (row.id === id ? { ...row, [key]: value } : row)));
   }
 
@@ -2597,6 +2605,66 @@ export default function Home() {
     });
   }
 
+
+  function rowFieldErrorKey(rowId: string, field: keyof RebarInfoRow) {
+    return `${rowId}:${String(field)}`;
+  }
+
+  function valueHasLengthUnit(value: string) {
+    const trimmed = value.trim();
+    if (!trimmed) return true;
+    if (/^n\/?a$/i.test(trimmed)) return true;
+    if (!/\d/.test(trimmed)) return true;
+    return /('|"|\bft\b|\bfeet\b|\bfoot\b|\bin\b|\binch\b|\binches\b)/i.test(trimmed);
+  }
+
+  function validateLengthUnitsBeforeGenerate(rowsToCheck: RebarInfoRow[]) {
+    const lengthFields: Array<{ field: keyof RebarInfoRow; label: string }> = [
+      { field: "length", label: "Length" },
+      { field: "calcLength", label: "Calculate run" },
+      { field: "side1BentLength", label: "Start end bent return length" },
+      { field: "side2BentLength", label: "Finish end bent return length" },
+      { field: "verticalBentLength", label: "Vertical bent overlap length" },
+      { field: "traverseLength", label: "Traverse length" },
+      { field: "spacingBetween", label: "Space between bars" },
+      { field: "traverseSpacing", label: "Traverse space between bars" },
+      { field: "spacing", label: "Spacing" },
+      { field: "diameter", label: "Diameter" },
+      { field: "clearanceTop", label: "Top clearance" },
+      { field: "clearanceBottom", label: "Bottom clearance" },
+      { field: "clearanceSides", label: "Side clearance" },
+    ];
+
+    const errors: string[] = [];
+    const messages: string[] = [];
+
+    rowsToCheck.forEach((row, index) => {
+      const rowLabel = row.segment || `Row ${index + 1}`;
+      lengthFields.forEach(({ field, label }) => {
+        const rawValue = String(row[field] || "");
+        if (!valueHasLengthUnit(rawValue)) {
+          errors.push(rowFieldErrorKey(row.id, field));
+          messages.push(`${rowLabel}: ${label} has "${rawValue}" but no unit. Use examples like 52', 24", or 2'-6".`);
+        }
+      });
+
+      if (row.side1Bent === "Yes" && !String(row.side1BentLength || "").trim()) {
+        errors.push(rowFieldErrorKey(row.id, "side1BentLength"));
+        messages.push(`${rowLabel}: Start end is bent, so enter a bent overlap length with units, like 24".`);
+      }
+      if (row.side2Bent === "Yes" && !String(row.side2BentLength || "").trim()) {
+        errors.push(rowFieldErrorKey(row.id, "side2BentLength"));
+        messages.push(`${rowLabel}: Finish end is bent, so enter a bent overlap length with units, like 24".`);
+      }
+      if (row.verticalBent === "Yes" && !String(row.verticalBentLength || "").trim()) {
+        errors.push(rowFieldErrorKey(row.id, "verticalBentLength"));
+        messages.push(`${rowLabel}: Vertical bent is Yes, so enter a bent overlap length with units, like 6".`);
+      }
+    });
+
+    return { errors, messages };
+  }
+
   async function saveGeneratedScheduleOnly(savedGeneratedSchedule: SavedGeneratedSchedule) {
     if (!user || !workspaceDocId) return;
     const projectId = currentProjectId || `${user.uid}-${Date.now()}`;
@@ -2625,10 +2693,20 @@ export default function Home() {
 
   async function generateSchedule() {
     if (isGeneratingSchedule) return;
-    setIsGeneratingSchedule(true);
     const sourceRows = showingCalculatedParams && calculatedRows.length > 0 ? calculatedRows : rebarInfoRows;
     const sourceGlobals = showingCalculatedParams && calculatedGlobals ? calculatedGlobals : rebarGlobalParams;
     const sourceLabel = showingCalculatedParams && calculatedRows.length > 0 ? "calculated PDF parameters" : "manual parameters";
+    const lengthUnitValidation = validateLengthUnitsBeforeGenerate(sourceRows);
+    if (lengthUnitValidation.errors.length) {
+      setLengthUnitErrorFields(lengthUnitValidation.errors);
+      const visibleMessages = lengthUnitValidation.messages.slice(0, 20);
+      const hiddenCount = Math.max(0, lengthUnitValidation.messages.length - visibleMessages.length);
+      setScheduleGenerationStatus(`Fix these length/unit fields before generating: ${visibleMessages.join(" | ")}${hiddenCount ? ` | ...and ${hiddenCount} more.` : ""}`);
+      window.alert(`Cannot generate yet. These fields have missing or unclear units:\n\n${visibleMessages.map((message, index) => `${index + 1}. ${message}`).join("\n")}${hiddenCount ? `\n\n...and ${hiddenCount} more.` : ""}\n\nUse units like 52', 24", 2'-6", ft, or in.`);
+      return;
+    }
+    setLengthUnitErrorFields([]);
+    setIsGeneratingSchedule(true);
     setScheduleGenerationStatus("Starting manual rebar schedule calculation...");
 
     try {
@@ -4877,7 +4955,7 @@ export default function Home() {
                             {manualComparisonRows.flatMap((manualRow, rowIndex) => {
                               const calculatedRow = calculatedRows[rowIndex];
                               const rowFields: [keyof RebarInfoRow, string][] = [
-                                ["itemType", "Type"], ["segment", "Segment"], ["rebarSize", "Rebar #"], ["duplicateTimes", "Times to duplicate / number of piers"], ["count", "Count"], ["calcLength", "Calculate len"], ["length", "Length"], ["diameter", "Diameter"], ["number", "Number"], ["spacingBetween", "Space between bars"], ["traverseLength", "Traverse piece len"], ["spacing", "Spacing between circles"], ["horizontalCircleCount", "Number of H-Circles"], ["numVerticalBars", "Vertical bars count"], ["verticalBent", "Vertical bent"], ["verticalBentLength", "Vertical bent overlap len"], ["clearanceTop", "Soil clearance top"], ["clearanceBottom", "Soil clearance bottom"], ["clearanceSides", "Soil clearance sides"],
+                                ["itemType", "Rebar Type"], ["segment", "Location / Segment"], ["rebarSize", "Rebar Size"], ["duplicateTimes", "Copies / Piers"], ["count", "Count"], ["calcLength", "Calculate len"], ["length", "Length"], ["diameter", "Diameter"], ["number", "Number"], ["spacingBetween", "Space between bars"], ["traverseLength", "Traverse piece len"], ["spacing", "Spacing between circles"], ["horizontalCircleCount", "Number of H-Circles"], ["numVerticalBars", "Vertical bars count"], ["verticalBent", "Vertical bent"], ["verticalBentLength", "Vertical bent overlap len"], ["clearanceTop", "Soil clearance top"], ["clearanceBottom", "Soil clearance bottom"], ["clearanceSides", "Soil clearance sides"],
                               ];
                               return rowFields.map(([key, label]) => {
                                 const manualValue = String(manualRow[key] || "");
@@ -4903,12 +4981,15 @@ export default function Home() {
                   const isNewEmptyRow = newEmptyRowIds.includes(row.id);
                   const miniInputClass = "rp-mini-input";
                   const miniSelectClass = "rp-mini-select";
-                  const RowField = ({ label, value, field, placeholder = "", className = "w-24", info }: { label: string; value: string; field: keyof RebarInfoRow; placeholder?: string; className?: string; info?: string }) => (
-                    <label className={`rp-mini-field ${className}`} title={info || label}>
-                      <span>{label}{info ? <InfoTip text={info} /> : null}</span>
-                      <input value={value} onChange={(e) => updateRebarInfoRow(row.id, field, e.target.value)} placeholder={placeholder} className={miniInputClass} />
-                    </label>
-                  );
+                  const RowField = ({ label, value, field, placeholder = "", className = "w-24", info }: { label: string; value: string; field: keyof RebarInfoRow; placeholder?: string; className?: string; info?: string }) => {
+                    const hasUnitError = lengthUnitErrorFields.includes(rowFieldErrorKey(row.id, field));
+                    return (
+                      <label className={`rp-mini-field ${className}`} title={hasUnitError ? `${label}: add a unit like ', ", ft, or in.` : (info || label)}>
+                        <span>{label}{info ? <InfoTip text={info} /> : null}</span>
+                        <input value={value} onChange={(e) => updateRebarInfoRow(row.id, field, e.target.value)} placeholder={placeholder} className={`${miniInputClass} ${hasUnitError ? "border-2 border-red-600 bg-red-50" : ""}`} />
+                      </label>
+                    );
+                  };
                   const RowSelect = ({ label, value, field, options, className = "w-24", info }: { label: string; value: string; field: keyof RebarInfoRow; options: string[]; className?: string; info?: string }) => (
                     <label className={`rp-mini-field ${className}`} title={info || label}>
                       <span>{label}{info ? <InfoTip text={info} /> : null}</span>
@@ -4921,90 +5002,90 @@ export default function Home() {
                   <div key={row.id} id={`rebar-row-${row.id}`} data-rebar-type={row.itemType} className={`rp-param-row rounded-lg border px-2 py-1 text-[11px] transition ${isNewEmptyRow ? "border-amber-500 bg-yellow-100" : "border-amber-300 bg-yellow-50"} ${showingCalculatedParams ? "pointer-events-none opacity-95" : ""}`}>
                     {isNewEmptyRow && <div className="mb-1 rounded border border-amber-400 bg-yellow-100 px-2 py-1 text-[11px] font-bold text-amber-900">NEW EMPTY ROW — enter or change any value and this warning will disappear.</div>}
                     <div className="rp-one-line-row">
-                      <label className="rp-mini-field w-44">
-                        <span>Type</span>
+                      <label className="rp-mini-field w-64" title="Choose what kind of rebar assembly this row describes: base/bottom, horizontal continuous, vertical, pier, or misc.">
+                        <span>Rebar Type<InfoTip text="Choose what kind of rebar assembly this row describes: base/bottom, horizontal continuous, vertical, pier, or misc." /></span>
                         <select value={row.itemType} onFocus={() => setActiveDiagramType(row.itemType)} onChange={(e) => changeRebarInfoType(row.id, e.target.value as RebarInfoType)} className={miniSelectClass}>
                           {rebarInfoTypes.map((type) => <option key={type}>{type}</option>)}
                         </select>
                       </label>
-                      <RowField label="Segment" value={row.segment} field="segment" placeholder="Name" className="w-44" />
-                      <RowField label="#" value={row.rebarSize} field="rebarSize" placeholder={row.itemType === "Pier" ? rebarGlobalParams.pierRebarSize : rebarGlobalParams.foundationRebarSize} className="w-16" />
-                      <RowField label={row.itemType === "Pier" ? "Piers" : "Dup"} value={row.duplicateTimes} field="duplicateTimes" placeholder={row.itemType === "Pier" ? "14" : "2"} className="w-16" />
+                      <RowField label="Location / Segment" info="Physical area or row name, for example SideWall Bottom, EndWall Horizontal, Pier Cage, or custom location." value={row.segment} field="segment" placeholder="Name" className="w-64" />
+                      <RowField label="Rebar Size" info="Bar size designation, for example #3, #4, #5. This is not the quantity." value={row.rebarSize} field="rebarSize" placeholder={row.itemType === "Pier" ? rebarGlobalParams.pierRebarSize : rebarGlobalParams.foundationRebarSize} className="w-36" />
+                      <RowField label={row.itemType === "Pier" ? "Pier Count" : "Copies"} info={row.itemType === "Pier" ? "Number of identical pier cages to generate from this row." : "Number of identical copies of this whole rebar assembly to generate, for example 2 side walls."} value={row.duplicateTimes} field="duplicateTimes" placeholder={row.itemType === "Pier" ? "14" : "2"} className="w-36" />
 
                       {row.itemType === "Base/Bottom rebar" && (
                         <>
                           <span className="rp-line-break" /><span className="rp-row-tag">Continuous longitudinals</span>
-                          <RowField label="Number" info="Number of bars/pieces. Use N/A when the app should calculate it." value={row.number} field="number" placeholder="N/A" className="w-16" />
-                          <RowField label="Length" info="Entered bar or run length." value={row.length} field="length" placeholder="52'" className="w-20" />
-                          <RowField label="Space between bars" info="Center-to-center spacing between adjacent bars." value={row.spacingBetween} field="spacingBetween" placeholder={'6"'} className="w-16" />
-                          <span className="rp-line-break" /><span className="rp-row-tag">Side 1</span>
-                          <RowSelect label="Bent?" info="Whether this end has a bend/return." value={row.side1Bent} field="side1Bent" options={["", "Yes", "No"]} className="w-20" />
-                          <RowField label="Turn angle" info="Bend angle such as 90 degrees." value={row.side1TurnAngle} field="side1TurnAngle" placeholder="90" className="w-14" />
-                          <RowField label="Bent overlap length" info="Length of bent return, hook, lap, or overlap." value={row.side1BentLength} field="side1BentLength" placeholder={'24"'} className="w-16" />
-                          <span className="rp-line-break" /><span className="rp-row-tag">Side 2</span>
-                          <RowSelect label="Bent?" info="Whether this end has a bend/return." value={row.side2Bent} field="side2Bent" options={["", "Yes", "No"]} className="w-20" />
-                          <RowField label="Turn angle" info="Bend angle such as 90 degrees." value={row.side2TurnAngle} field="side2TurnAngle" placeholder="90" className="w-14" />
-                          <RowField label="Bent overlap length" info="Length of bent return, hook, lap, or overlap." value={row.side2BentLength} field="side2BentLength" placeholder={'24"'} className="w-16" />
+                          <RowField label="Bar Count" info="Number of continuous parallel bars or nested loops in this group. Use N/A when not used." value={row.number} field="number" placeholder="N/A" className="w-28" />
+                          <RowField label="Design Length" info="Overall design/run length before the app applies clearance, spacing, laps, bends, and stock splitting." value={row.length} field="length" placeholder="52'" className="w-28" />
+                          <RowField label="Bar Spacing" info="Center-to-center spacing between adjacent bars." value={row.spacingBetween} field="spacingBetween" placeholder={'6"'} className="w-28" />
+                          <span className="rp-line-break" /><span className="rp-row-tag">Start end</span>
+                          <RowSelect label="Bent?" info="Yes if this end has a bend, hook, return, or lap leg." value={row.side1Bent} field="side1Bent" options={["", "Yes", "No"]} className="w-20" />
+                          <RowField label="Turn Angle" info="Bend angle in degrees, for example 90." value={row.side1TurnAngle} field="side1TurnAngle" placeholder="90" className="w-28" />
+                          <RowField label="Bent Return Length" info="Length of bent return, hook, lap, or overlap. Include units, for example 24&quot;." value={row.side1BentLength} field="side1BentLength" placeholder={'24"'} className="w-32" />
+                          <span className="rp-line-break" /><span className="rp-row-tag">Finish end</span>
+                          <RowSelect label="Bent?" info="Yes if this end has a bend, hook, return, or lap leg." value={row.side2Bent} field="side2Bent" options={["", "Yes", "No"]} className="w-20" />
+                          <RowField label="Turn Angle" info="Bend angle in degrees, for example 90." value={row.side2TurnAngle} field="side2TurnAngle" placeholder="90" className="w-28" />
+                          <RowField label="Bent Return Length" info="Length of bent return, hook, lap, or overlap. Include units, for example 24&quot;." value={row.side2BentLength} field="side2BentLength" placeholder={'24"'} className="w-32" />
                           <span className="rp-line-break" /><span className="rp-row-tag">Traverse bars</span>
-                          <RowField label="Number" info="Number of bars/pieces. Use N/A when the app should calculate it." value={row.traverseNumber} field="traverseNumber" placeholder="N/A" className="w-16" />
-                          <RowField label="Space between bars" info="Center-to-center spacing between adjacent bars." value={row.traverseSpacing} field="traverseSpacing" placeholder={'12"'} className="w-16" />
-                          <RowField label="Length" info="Entered bar or run length." value={row.traverseLength} field="traverseLength" placeholder={'12"'} className="w-16" />
+                          <RowField label="Bar Count" info="Number of traverse/cross bars. Use N/A when the app should calculate or skip it." value={row.traverseNumber} field="traverseNumber" placeholder="N/A" className="w-28" />
+                          <RowField label="Bar Spacing" info="Center-to-center spacing between adjacent bars." value={row.traverseSpacing} field="traverseSpacing" placeholder={'12"'} className="w-28" />
+                          <RowField label="Bar Length" info="Length of each traverse/cross bar. Include units, for example 12&quot;." value={row.traverseLength} field="traverseLength" placeholder={'12"'} className="w-28" />
                           <span className="rp-line-break" /><span className="rp-row-tag">Clearance</span>
-                          <RowField label="Top clearance" info="Top concrete cover/clearance." value={row.clearanceTop} field="clearanceTop" placeholder={'3"'} className="w-14" />
-                          <RowField label="Bottom clearance" info="Bottom concrete cover/clearance." value={row.clearanceBottom} field="clearanceBottom" placeholder={'3"'} className="w-14" />
-                          <RowField label="Side clearance" info="Side concrete cover/clearance." value={row.clearanceSides} field="clearanceSides" placeholder={'3"'} className="w-14" />
+                          <RowField label="Top Clearance" info="Concrete cover/clearance from top surface to rebar." value={row.clearanceTop} field="clearanceTop" placeholder={'3"'} className="w-32" />
+                          <RowField label="Bottom Clearance" info="Concrete cover/clearance from bottom/soil surface to rebar." value={row.clearanceBottom} field="clearanceBottom" placeholder={'3"'} className="w-32" />
+                          <RowField label="Side Clearance" info="Concrete cover/clearance from side soil/form edge to rebar." value={row.clearanceSides} field="clearanceSides" placeholder={'3"'} className="w-32" />
                         </>
                       )}
 
                       {row.itemType === "Horiz continues longtidues" && (
                         <>
                           <span className="rp-line-break" /><span className="rp-row-tag">Horizontal continuous</span>
-                          <RowField label="Length" info="Entered bar or run length." value={row.length} field="length" placeholder="52'" className="w-20" />
-                          <RowField label="Number" info="Number of bars/pieces. Use N/A when the app should calculate it." value={row.number} field="number" placeholder="1" className="w-16" />
-                          <RowField label="Space between bars" info="Center-to-center spacing between adjacent bars." value={row.spacingBetween} field="spacingBetween" placeholder={'12"'} className="w-16" />
-                          <span className="rp-line-break" /><span className="rp-row-tag">Side 1</span>
-                          <RowSelect label="Bent?" info="Whether this end has a bend/return." value={row.side1Bent} field="side1Bent" options={["", "Yes", "No"]} className="w-20" />
-                          <RowField label="Turn angle" info="Bend angle such as 90 degrees." value={row.side1TurnAngle} field="side1TurnAngle" placeholder="90" className="w-14" />
-                          <RowField label="Bent overlap length" info="Length of bent return, hook, lap, or overlap." value={row.side1BentLength} field="side1BentLength" placeholder={'24"'} className="w-16" />
-                          <span className="rp-line-break" /><span className="rp-row-tag">Side 2</span>
-                          <RowSelect label="Bent?" info="Whether this end has a bend/return." value={row.side2Bent} field="side2Bent" options={["", "Yes", "No"]} className="w-20" />
-                          <RowField label="Turn angle" info="Bend angle such as 90 degrees." value={row.side2TurnAngle} field="side2TurnAngle" placeholder="90" className="w-14" />
-                          <RowField label="Bent overlap length" info="Length of bent return, hook, lap, or overlap." value={row.side2BentLength} field="side2BentLength" placeholder={'24"'} className="w-16" />
+                          <RowField label="Design Length" info="Overall design/run length before the app applies clearance, spacing, laps, bends, and stock splitting." value={row.length} field="length" placeholder="52'" className="w-28" />
+                          <RowField label="Bar Count" info="Number of continuous parallel bars or nested loops in this group. Use N/A when not used." value={row.number} field="number" placeholder="1" className="w-28" />
+                          <RowField label="Bar Spacing" info="Center-to-center spacing between adjacent bars." value={row.spacingBetween} field="spacingBetween" placeholder={'12"'} className="w-28" />
+                          <span className="rp-line-break" /><span className="rp-row-tag">Start end</span>
+                          <RowSelect label="Bent?" info="Yes if this end has a bend, hook, return, or lap leg." value={row.side1Bent} field="side1Bent" options={["", "Yes", "No"]} className="w-20" />
+                          <RowField label="Turn Angle" info="Bend angle in degrees, for example 90." value={row.side1TurnAngle} field="side1TurnAngle" placeholder="90" className="w-28" />
+                          <RowField label="Bent Return Length" info="Length of bent return, hook, lap, or overlap. Include units, for example 24&quot;." value={row.side1BentLength} field="side1BentLength" placeholder={'24"'} className="w-32" />
+                          <span className="rp-line-break" /><span className="rp-row-tag">Finish end</span>
+                          <RowSelect label="Bent?" info="Yes if this end has a bend, hook, return, or lap leg." value={row.side2Bent} field="side2Bent" options={["", "Yes", "No"]} className="w-20" />
+                          <RowField label="Turn Angle" info="Bend angle in degrees, for example 90." value={row.side2TurnAngle} field="side2TurnAngle" placeholder="90" className="w-28" />
+                          <RowField label="Bent Return Length" info="Length of bent return, hook, lap, or overlap. Include units, for example 24&quot;." value={row.side2BentLength} field="side2BentLength" placeholder={'24"'} className="w-32" />
                         </>
                       )}
 
                       {row.itemType === "Vertical Rebar" && (
                         <>
                           <span className="rp-line-break" /><span className="rp-row-tag">Vertical L bars</span>
-                          <RowField label="Space between bars" info="Center-to-center spacing between adjacent bars." value={row.spacing} field="spacing" placeholder={'18"'} className="w-16" />
-                          <RowField label="Count" info="Manual quantity, or N/A to calculate from run length and spacing." value={row.count} field="count" placeholder="N/A" className="w-16" />
-                          <RowField label="Bar straight length" info="Straight vertical portion before bent overlap." value={row.length} field="length" placeholder={'24"'} className="w-16" />
-                          <RowField label="Calculate run" info="Run length used to calculate quantity when Count is N/A." value={row.calcLength} field="calcLength" placeholder="52'" className="w-20" />
-                          <span className="rp-line-break" /><span className="rp-row-tag">Side 1</span>
-                          <RowSelect label="Bent?" info="Whether this end has a bend/return." value={row.side1Bent} field="side1Bent" options={["", "Yes", "No"]} className="w-20" />
-                          <RowField label="Turn angle" info="Bend angle such as 90 degrees." value={row.side1TurnAngle} field="side1TurnAngle" placeholder="90" className="w-14" />
-                          <RowField label="Bent overlap length" info="Length of bent return, hook, lap, or overlap." value={row.side1BentLength} field="side1BentLength" placeholder={'6"'} className="w-16" />
-                          <span className="rp-line-break" /><span className="rp-row-tag">Side 2</span>
-                          <RowSelect label="Bent?" info="Whether this end has a bend/return." value={row.side2Bent} field="side2Bent" options={["", "Yes", "No"]} className="w-20" />
-                          <RowField label="Turn angle" info="Bend angle such as 90 degrees." value={row.side2TurnAngle} field="side2TurnAngle" placeholder="90" className="w-14" />
-                          <RowField label="Bent overlap length" info="Length of bent return, hook, lap, or overlap." value={row.side2BentLength} field="side2BentLength" placeholder={'6"'} className="w-16" />
+                          <RowField label="Bar Spacing" info="Center-to-center spacing between adjacent bars." value={row.spacing} field="spacing" placeholder={'18"'} className="w-28" />
+                          <RowField label="Bar Count" info="Manual quantity, or N/A to calculate from run length and spacing." value={row.count} field="count" placeholder="N/A" className="w-28" />
+                          <RowField label="Straight Length" info="Straight vertical portion before bent overlap/return." value={row.length} field="length" placeholder={'24"'} className="w-32" />
+                          <RowField label="Calculate Run" info="Run length used to calculate quantity when Bar Count is N/A." value={row.calcLength} field="calcLength" placeholder="52'" className="w-28" />
+                          <span className="rp-line-break" /><span className="rp-row-tag">Start end</span>
+                          <RowSelect label="Bent?" info="Yes if this end has a bend, hook, return, or lap leg." value={row.side1Bent} field="side1Bent" options={["", "Yes", "No"]} className="w-20" />
+                          <RowField label="Turn Angle" info="Bend angle in degrees, for example 90." value={row.side1TurnAngle} field="side1TurnAngle" placeholder="90" className="w-28" />
+                          <RowField label="Bent Return Length" info="Length of bent return, hook, lap, or overlap. Include units, for example 24&quot;." value={row.side1BentLength} field="side1BentLength" placeholder={'6"'} className="w-28" />
+                          <span className="rp-line-break" /><span className="rp-row-tag">Finish end</span>
+                          <RowSelect label="Bent?" info="Yes if this end has a bend, hook, return, or lap leg." value={row.side2Bent} field="side2Bent" options={["", "Yes", "No"]} className="w-20" />
+                          <RowField label="Turn Angle" info="Bend angle in degrees, for example 90." value={row.side2TurnAngle} field="side2TurnAngle" placeholder="90" className="w-28" />
+                          <RowField label="Bent Return Length" info="Length of bent return, hook, lap, or overlap. Include units, for example 24&quot;." value={row.side2BentLength} field="side2BentLength" placeholder={'6"'} className="w-28" />
                         </>
                       )}
 
                       {row.itemType === "Pier" && (
                         <>
                           <span className="rp-line-break" /><span className="rp-row-tag">Pier cage</span>
-                          <RowField label="Pier diameter" info="Outside pier diameter." value={row.diameter} field="diameter" placeholder={'30"'} className="w-16" />
-                          <RowField label="Length" info="Entered bar or run length." value={row.length} field="length" placeholder={'30"'} className="w-16" />
-                          <RowField label="H-circles" info="Number of horizontal circles/hoops. Use N/A to calculate from spacing." value={row.horizontalCircleCount} field="horizontalCircleCount" placeholder="N/A" className="w-16" />
-                          <RowField label="Vertical bars" info="Number of vertical bars per pier." value={row.numVerticalBars} field="numVerticalBars" placeholder="6" className="w-14" />
-                          <RowField label="Space between bars" info="Center-to-center spacing between adjacent bars." value={row.spacing} field="spacing" placeholder={'8"'} className="w-16" />
-                          <RowSelect label="Bent?" info="Whether this end has a bend/return." value={row.verticalBent} field="verticalBent" options={["", "Yes", "No"]} className="w-20" />
-                          <RowField label="Bent overlap length" info="Length of bent return, hook, lap, or overlap." value={row.verticalBentLength} field="verticalBentLength" placeholder={'6"'} className="w-16" />
+                          <RowField label="Pier Diameter" info="Outside concrete pier diameter. Include units, for example 30&quot;." value={row.diameter} field="diameter" placeholder={'30"'} className="w-28" />
+                          <RowField label="Cage Height" info="Pier cage/bar height. Include units, for example 30&quot;." value={row.length} field="length" placeholder={'30"'} className="w-28" />
+                          <RowField label="Hoop Count" info="Number of horizontal circles/hoops. Use N/A to calculate from spacing." value={row.horizontalCircleCount} field="horizontalCircleCount" placeholder="N/A" className="w-28" />
+                          <RowField label="Vertical Bar Count" info="Number of vertical bars per pier cage." value={row.numVerticalBars} field="numVerticalBars" placeholder="6" className="w-32" />
+                          <RowField label="Bar Spacing" info="Center-to-center spacing between adjacent bars." value={row.spacing} field="spacing" placeholder={'8"'} className="w-16" />
+                          <RowSelect label="Bent?" info="Yes if this end has a bend, hook, return, or lap leg." value={row.verticalBent} field="verticalBent" options={["", "Yes", "No"]} className="w-20" />
+                          <RowField label="Bent Return Length" info="Length of bent return, hook, lap, or overlap. Include units, for example 24&quot;." value={row.verticalBentLength} field="verticalBentLength" placeholder={'6"'} className="w-28" />
                           <span className="rp-line-break" /><span className="rp-row-tag">Clearance</span>
-                          <RowField label="Top clearance" info="Top concrete cover/clearance." value={row.clearanceTop} field="clearanceTop" placeholder={'3"'} className="w-14" />
-                          <RowField label="Bottom clearance" info="Bottom concrete cover/clearance." value={row.clearanceBottom} field="clearanceBottom" placeholder={'3"'} className="w-14" />
-                          <RowField label="Side clearance" info="Side concrete cover/clearance." value={row.clearanceSides} field="clearanceSides" placeholder={'3"'} className="w-14" />
+                          <RowField label="Top Clearance" info="Concrete cover/clearance from top surface to rebar." value={row.clearanceTop} field="clearanceTop" placeholder={'3"'} className="w-32" />
+                          <RowField label="Bottom Clearance" info="Concrete cover/clearance from bottom/soil surface to rebar." value={row.clearanceBottom} field="clearanceBottom" placeholder={'3"'} className="w-32" />
+                          <RowField label="Side Clearance" info="Concrete cover/clearance from side soil/form edge to rebar." value={row.clearanceSides} field="clearanceSides" placeholder={'3"'} className="w-32" />
                         </>
                       )}
 
@@ -5409,13 +5490,12 @@ export default function Home() {
             <div className="mb-6 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow">
               <div className="border-b bg-slate-950 px-4 py-3 text-white">
                 <h3 className="text-lg font-black">Consolidated Cut Batches</h3>
-                <p className="text-xs text-slate-300">Same cut length, left function, used length, right function, category, and rebar size are grouped together so the shop can cut repeated parts faster. The full detailed list stays below.</p>
+                <p className="text-xs text-slate-300">Same rebar size, cut length, left function, used length, and right function are grouped together. Type/location is ignored here because this is the shop cutting list; the full detailed list stays below.</p>
               </div>
               <div className="max-h-80 overflow-auto">
                 <table className="cut-batch-table w-full border-collapse text-left text-xs">
                   <thead className="sticky top-0 z-10 bg-blue-50 text-blue-950 shadow-sm">
                     <tr>
-                      <th className="border-b p-2">Type</th>
                       <th className="border-b p-2">Size</th>
                       <th className="border-b bg-yellow-100 p-2 text-sm font-extrabold text-yellow-950">Total Qty</th>
                       <th className="border-b bg-yellow-100 p-2 text-sm font-extrabold text-yellow-950">Cut Len</th>
@@ -5430,7 +5510,6 @@ export default function Home() {
                   <tbody>
                     {fabricationBatchList.map((batch) => (
                       <tr key={batch.key} className="hover:bg-blue-50">
-                        <td className="border-b p-2"><span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-black text-slate-700">{batch.category}</span></td>
                         <td className="border-b p-2 font-black">{batch.size}</td>
                         <td className="border-b bg-yellow-50 p-2 text-sm font-extrabold text-yellow-950">{batch.qty}</td>
                         <td className="border-b bg-yellow-50 p-2 text-sm font-extrabold text-yellow-950">{batch.cutLength}</td>
