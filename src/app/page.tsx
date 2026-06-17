@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import {
   formatFeet,
   generateRebarSchedule,
@@ -23,9 +23,10 @@ import {
 } from "@/lib/planRecognition";
 import { calculatedFieldKeys, fieldHelp, initialFields } from "@/lib/sharedRebarParameters";
 import { useAuth } from "@/contexts/AuthContext";
-import { db, storage } from "@/lib/firebase";
+import { auth, db, storage } from "@/lib/firebase";
 import { collection, deleteDoc, doc, getDoc, getDocs, orderBy, query, serverTimestamp, setDoc } from "firebase/firestore";
 import { getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage";
+import { sendPasswordResetEmail, signInWithEmailAndPassword } from "firebase/auth";
 
 type ExtractedField = {
   key: string;
@@ -182,6 +183,7 @@ type SavedPlannerProject = {
   id: string;
   projectName: string;
   planFileName: string;
+  createdAtLabel: string;
   updatedAtLabel: string;
   cropCount: number;
   rowCount: number;
@@ -503,6 +505,8 @@ function makeTooltip(field: ExtractedField, source: FieldSource) {
   return parts.join("\n");
 }
 
+const CALCULATED_PARAMETER_MODE_ENABLED = false;
+
 export default function Home() {
   const router = useRouter();
   const { user, loading, logout } = useAuth();
@@ -601,6 +605,7 @@ export default function Home() {
   const [showOwnerMenu, setShowOwnerMenu] = useState(false);
   const [showSubscriptionMenu, setShowSubscriptionMenu] = useState(false);
   const [showHelpMenu, setShowHelpMenu] = useState(false);
+  const [showProfileMenu, setShowProfileMenu] = useState(false);
   const [showProjectLibrary, setShowProjectLibrary] = useState(false);
   const [showWasteReport, setShowWasteReport] = useState(false);
   const [showFoundationMap, setShowFoundationMap] = useState(false);
@@ -615,6 +620,7 @@ export default function Home() {
   const [reviewedPieceMarks, setReviewedPieceMarks] = useState<string[]>([]);
   const [lengthUnitErrorFields, setLengthUnitErrorFields] = useState<string[]>([]);
   const backupImportInputRef = useRef<HTMLInputElement | null>(null);
+  const manualConfigImportInputRef = useRef<HTMLInputElement | null>(null);
 
 
 
@@ -646,7 +652,7 @@ export default function Home() {
       projectArchived: projectStatus === "Archived",
       savedGeneratedSchedule: schedule.length && materialTakeoff ? {
         generatedAtIso: savedScheduleAt || new Date().toISOString(),
-        sourceLabel: showingCalculatedParams && calculatedRows.length > 0 ? "calculated PDF parameters" : "manual parameters",
+        sourceLabel: "manual parameters",
         schedule,
         summary,
         materialTakeoff,
@@ -872,12 +878,13 @@ export default function Home() {
     try {
       const snaps = await getDocs(query(collection(db, "plannerProjects"), orderBy("updatedAt", "desc")));
       const rows = snaps.docs
-        .map((projectSnap) => ({ id: projectSnap.id, ...(projectSnap.data() as Partial<PlannerWorkspace> & { ownerUid?: string; updatedAt?: { toDate?: () => Date } }) }))
+        .map((projectSnap) => ({ id: projectSnap.id, ...(projectSnap.data() as Partial<PlannerWorkspace> & { ownerUid?: string; createdAt?: { toDate?: () => Date }; updatedAt?: { toDate?: () => Date } }) }))
         .filter((project) => project.ownerUid === ownerUid)
         .map((project) => ({
           id: project.id,
           projectName: project.projectName || "Untitled project",
           planFileName: project.planFileName || "No plan file saved",
+          createdAtLabel: project.createdAt?.toDate ? project.createdAt.toDate().toLocaleString() : "",
           updatedAtLabel: project.updatedAt?.toDate ? project.updatedAt.toDate().toLocaleString() : "",
           cropCount: Array.isArray(project.cropRefs) ? project.cropRefs.length : 0,
           rowCount: Array.isArray(project.rebarInfoRows) ? project.rebarInfoRows.length : 0,
@@ -1132,6 +1139,66 @@ export default function Home() {
     }
   }
 
+  function downloadManualConfigJson() {
+    const payload = {
+      app: "rebar-planner",
+      configVersion: 1,
+      type: "manual-rebar-config",
+      exportedAtIso: new Date().toISOString(),
+      projectName,
+      extractionMode,
+      horizontalLap,
+      verticalBentLap,
+      stickLength,
+      fields,
+      fieldSources,
+      pierMode,
+      rebarGlobalParams,
+      foundationRebarConfig,
+      rebarInfoRows,
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${(projectName || "rebar-manual-config").replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "").toLowerCase()}-manual-config.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+    setWorkspaceStatus("Manual config saved to a local JSON file.");
+  }
+
+  async function importManualConfigJson(file: File | null) {
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const data = JSON.parse(text) as Partial<PlannerWorkspace> & { app?: string; type?: string; configVersion?: number };
+      if (data.app !== "rebar-planner" || (!Array.isArray(data.rebarInfoRows) && !data.rebarGlobalParams && !data.foundationRebarConfig)) {
+        setWorkspaceStatus("Load config failed: this JSON file does not contain Rebar Planner manual config rows/parameters.");
+        return;
+      }
+      setParamViewMode("manual");
+      setShowParamComparison(false);
+      applyWorkspaceSnapshot({
+        extractionMode: data.extractionMode,
+        horizontalLap: data.horizontalLap,
+        verticalBentLap: data.verticalBentLap,
+        stickLength: data.stickLength,
+        fields: data.fields,
+        fieldSources: data.fieldSources,
+        pierMode: data.pierMode,
+        rebarGlobalParams: data.rebarGlobalParams,
+        foundationRebarConfig: data.foundationRebarConfig,
+        rebarInfoRows: data.rebarInfoRows,
+      });
+      setProjectStatus("Draft");
+      setWorkspaceStatus("Manual config loaded. Review the rows, then generate the schedule or save the project.");
+    } catch (error) {
+      setWorkspaceStatus(error instanceof Error ? `Load config failed: ${error.message}` : "Load config failed.");
+    } finally {
+      if (manualConfigImportInputRef.current) manualConfigImportInputRef.current.value = "";
+    }
+  }
+
   function downloadShopPackageHtml() {
     const esc = (value: unknown) => String(value ?? "")
       .replaceAll("&", "&amp;")
@@ -1299,10 +1366,7 @@ export default function Home() {
 
   useEffect(() => {
     if (loading) return;
-    if (!user) {
-      router.push("/auth");
-      return;
-    }
+    if (!user) return;
     const currentUser = user;
     let cancelled = false;
     async function loadUserRole() {
@@ -1511,8 +1575,73 @@ export default function Home() {
     return () => document.removeEventListener("pointerdown", closeCropDropdownOnOutsideClick);
   }, []);
 
-  if (loading || !user) {
-    return <main className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-blue-950 p-4 text-slate-900 md:p-6">Loading Rebar Planner...</main>;
+  async function loginGuestDemo() {
+    setWorkspaceStatus("Opening guest demo...");
+    try {
+      await signInWithEmailAndPassword(auth, "vdumpa972+guest1@gmail.com", "liord972");
+      router.refresh();
+    } catch (error) {
+      setWorkspaceStatus(error instanceof Error ? `Guest demo login failed: ${error.message}` : "Guest demo login failed.");
+      router.push("/auth");
+    }
+  }
+
+  async function sendCurrentUserPasswordReset() {
+    const email = user?.email || "";
+    if (!email) {
+      setWorkspaceStatus("No signed-in email found for password reset.");
+      return;
+    }
+    try {
+      await sendPasswordResetEmail(auth, email);
+      setWorkspaceStatus(`Password reset email sent to ${email}.`);
+    } catch (error) {
+      setWorkspaceStatus(error instanceof Error ? `Password reset failed: ${error.message}` : "Password reset failed.");
+    }
+  }
+
+  if (loading) {
+    return <main className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-blue-950 p-4 text-sm text-white md:p-6">Loading Rebar Planner...</main>;
+  }
+
+  if (!user) {
+    return (
+      <main className="min-h-screen bg-slate-100 bg-cover bg-fixed bg-center p-3 text-sm text-slate-900 md:p-4" style={{ backgroundImage: "linear-gradient(rgba(248,250,252,0.72), rgba(241,245,249,0.78)), url('/rebar-background.png')" }}>
+        <div className="mx-auto max-w-6xl rounded-[1.5rem] bg-white/88 p-6 shadow-2xl ring-1 ring-slate-200 backdrop-blur md:p-8">
+          <div className="text-sm font-black uppercase tracking-[0.22em] text-blue-700">Rebar Planner</div>
+          <h1 className="mt-5 max-w-4xl text-3xl font-black leading-tight text-slate-950 md:text-5xl">Build foundation rebar schedules, cut lists, and shop packages in one place.</h1>
+          <p className="mt-5 max-w-4xl text-base leading-7 text-slate-600">Rebar Planner helps contractors and builders turn foundation dimensions, manual rebar parameters, pier cages, laps, bends, and stock lengths into organized schedules.</p>
+
+          <section className="mt-7 rounded-2xl border border-blue-100 bg-blue-50/70 p-5">
+            <h2 className="text-2xl font-bold text-slate-950">Start here</h2>
+            <p className="mt-2 text-base text-slate-600">New customers can start a trial, purchase access, sign in, or open a prepared guest demo.</p>
+            <div className="mt-5 grid gap-3 md:grid-cols-4">
+              <Link href="/pricing" className="rounded-xl bg-blue-700 px-4 py-3 text-center text-base font-black text-white shadow hover:bg-blue-800">Free Trial</Link>
+              <Link href="/pricing" className="rounded-xl bg-slate-200 px-4 py-3 text-center text-base font-black text-slate-950 hover:bg-slate-300">Purchase</Link>
+              <Link href="/auth" className="rounded-xl bg-slate-200 px-4 py-3 text-center text-base font-black text-slate-950 hover:bg-slate-300">Login / Register</Link>
+              <button type="button" onClick={loginGuestDemo} className="rounded-xl bg-emerald-700 px-4 py-3 text-center text-base font-black text-white shadow hover:bg-emerald-800">Guest Demo</button>
+            </div>
+            {workspaceStatus && <p className="mt-4 rounded-xl bg-white/75 p-3 text-sm font-semibold text-slate-700">{workspaceStatus}</p>}
+          </section>
+
+          <section className="mt-4 grid gap-3 md:grid-cols-3">
+            <div className="rounded-2xl border bg-white/90 p-4 shadow-sm"><h3 className="text-xl font-bold">Manual rebar control</h3><p className="mt-2 text-sm leading-6 text-slate-600">Enter footing, wall, vertical bar, and pier cage rows with laps, bends, spacing, cover, and stock length.</p></div>
+            <div className="rounded-2xl border bg-white/90 p-4 shadow-sm"><h3 className="text-xl font-bold">Project library</h3><p className="mt-2 text-sm leading-6 text-slate-600">Save projects, load prior work, archive finished jobs, and keep plan evidence together.</p></div>
+            <div className="rounded-2xl border bg-white/90 p-4 shadow-sm"><h3 className="text-xl font-bold">Shop package exports</h3><p className="mt-2 text-sm leading-6 text-slate-600">Generate cut schedules, material summaries, validation warnings, and printable shop packages.</p></div>
+          </section>
+
+          <section className="mt-6 rounded-2xl border bg-white/90 p-4 shadow-sm">
+            <div className="text-sm font-black uppercase tracking-[0.2em] text-blue-700">How it works</div>
+            <h2 className="mt-2 text-2xl font-bold">From setup to cut list.</h2>
+            <div className="mt-4 grid gap-3 md:grid-cols-3">
+              <div className="rounded-xl border p-4"><div className="text-lg font-bold">1. Load the job</div><p className="mt-3 text-slate-600">Create a project and enter or import the rebar parameters.</p></div>
+              <div className="rounded-xl border p-4"><div className="text-lg font-bold">2. Review the rows</div><p className="mt-3 text-slate-600">Confirm bends, overlaps, spacing, counts, covers, and pier cage data.</p></div>
+              <div className="rounded-xl border p-4"><div className="text-lg font-bold">3. Generate and export</div><p className="mt-3 text-slate-600">Build the schedule, review warnings, and export the shop package.</p></div>
+            </div>
+          </section>
+        </div>
+      </main>
+    );
   }
 
   function getFieldValue(key: string) {
@@ -2307,9 +2436,9 @@ export default function Home() {
       setCalculatedRows(buildCalculatedRebarRowsFromPlanText(recognition.preferredText || text, calculatedFieldSet));
       setCalculatedGlobals(buildCalculatedGlobalsFromPlanText(recognition.preferredText || text, calculatedFieldSet));
       setCalculatedAt(new Date().toLocaleString());
-      setShowParamComparison(true);
-      setParamViewMode("calculated");
-      setExtractionProgress("Calculated parameters created. Comparing with manual entry...");
+      setShowParamComparison(false);
+      setParamViewMode("manual");
+      setExtractionProgress("PDF text read. Manual entry remains active; calculated parameter mode is disabled.");
 
       let visualNotes: string[] = [];
       if (useExternalVisualAnalyzer) {
@@ -2693,9 +2822,9 @@ export default function Home() {
 
   async function generateSchedule() {
     if (isGeneratingSchedule) return;
-    const sourceRows = showingCalculatedParams && calculatedRows.length > 0 ? calculatedRows : rebarInfoRows;
-    const sourceGlobals = showingCalculatedParams && calculatedGlobals ? calculatedGlobals : rebarGlobalParams;
-    const sourceLabel = showingCalculatedParams && calculatedRows.length > 0 ? "calculated PDF parameters" : "manual parameters";
+    const sourceRows = rebarInfoRows;
+    const sourceGlobals = rebarGlobalParams;
+    const sourceLabel = "manual parameters";
     const lengthUnitValidation = validateLengthUnitsBeforeGenerate(sourceRows);
     if (lengthUnitValidation.errors.length) {
       setLengthUnitErrorFields(lengthUnitValidation.errors);
@@ -3322,10 +3451,11 @@ export default function Home() {
 
   const isPdf = planFileType.includes("pdf");
   const isImage = planFileType.startsWith("image/");
-  const showingCalculatedParams = paramViewMode === "calculated";
-  const displayedGlobalParams = showingCalculatedParams && calculatedGlobals ? calculatedGlobals : rebarGlobalParams;
-  const rawDisplayedRows = showingCalculatedParams && calculatedRows.length > 0 ? calculatedRows : rebarInfoRows;
-  const displayedRows = rawDisplayedRows;
+  const showingCalculatedParams = CALCULATED_PARAMETER_MODE_ENABLED && paramViewMode === "calculated";
+  const displayedGlobalParams = rebarGlobalParams;
+  // Manual parameter inputs must always edit the real manual state.
+  // Calculated PDF values are shown only in the comparison panel, not as editable input values.
+  const displayedRows = rebarInfoRows;
 
   const pdfPanelSizeClass = pdfPanelSize === "small" ? "lg:max-w-[34rem]" : pdfPanelSize === "medium" ? "lg:max-w-[52rem]" : "lg:max-w-none";
   const pdfPanelHeightClass = pdfPanelSize === "small" ? "h-[420px]" : pdfPanelSize === "medium" ? "h-[600px]" : "h-[760px]";
@@ -3386,7 +3516,7 @@ export default function Home() {
   const scheduleHealthLabel = scheduleHealthOkCount === scheduleHealthChecks.length ? "Ready for shop review" : `${scheduleHealthOkCount}/${scheduleHealthChecks.length} checks ready`;
 
   const subscriptionPreviewCards = [
-    { label: "Trial", value: "Ready later", note: "Future 7/14/30 day trial hook." },
+    { label: "Trial", value: "Ready later", note: "Future trial hook." },
     { label: "Plan", value: authRole === "owner" ? "Owner" : "User", note: "Billing page can plug into this card." },
     { label: "Access", value: isOwner ? "Advanced + Simple" : "Simple", note: "Advanced tools remain owner-only." },
   ];
@@ -3892,15 +4022,15 @@ export default function Home() {
 
   return (
     <main
-      className="min-h-screen bg-slate-100 bg-cover bg-fixed bg-center p-4 text-slate-900 md:p-6"
+      className="min-h-screen bg-slate-100 bg-cover bg-fixed bg-center p-3 text-[13px] text-slate-900 md:p-4"
       style={{
         backgroundImage:
           "linear-gradient(rgba(248,250,252,0.68), rgba(241,245,249,0.74)), url('/rebar-background.png')",
       }}
     >
-      <div className="mx-auto w-full max-w-[1800px]">
+      <div className="mx-auto w-full max-w-[1680px]">
 
-        <div className="grid gap-6 xl:grid-cols-[260px_minmax(0,1fr)]">
+        <div className="grid gap-6 xl:grid-cols-[240px_minmax(0,1fr)]">
           <aside className="hidden xl:block">
             <div className="sticky top-6 overflow-hidden rounded-2xl border border-slate-200 bg-white/95 shadow-xl backdrop-blur">
               <div className="border-b bg-gradient-to-br from-slate-950 to-blue-950 p-5 text-white">
@@ -3932,14 +4062,22 @@ export default function Home() {
                             <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-3 text-xs text-slate-500">No saved projects loaded.</div>
                           ) : (
                             savedProjects.slice(0, 8).map((project) => (
-                              <button key={project.id} type="button" onClick={() => loadProject(project.id)} className={`w-full rounded-xl border bg-white p-3 text-left text-xs text-slate-900 hover:border-blue-300 hover:bg-blue-50 ${project.id === currentProjectId ? "border-blue-400 bg-blue-50" : ""}`}>
+                              <div key={project.id} className={`w-full rounded-xl border bg-white p-3 text-left text-xs text-slate-900 ${project.id === currentProjectId ? "border-blue-400 bg-blue-50" : ""}`}>
                                 <div className="truncate font-black text-slate-950">{project.projectFavorite ? "★ " : ""}{project.projectName}</div>
                                 <div className="mt-1 truncate font-semibold text-slate-500">{project.planFileName || "No PDF"}</div>
+                                <div className="mt-1 space-y-0.5 text-[10px] font-semibold text-slate-500">
+                                  <div>Created: {project.createdAtLabel || "unknown"}</div>
+                                  <div>Updated: {project.updatedAtLabel || "unknown"}</div>
+                                </div>
                                 <div className="mt-2 flex flex-wrap gap-1">
                                   <span className={`rounded-full border px-2 py-0.5 text-[10px] font-black ${projectStatusTone[project.projectStatus]}`}>{project.projectStatus}</span>
                                   <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-600">Rows {project.rowCount}</span>
                                 </div>
-                              </button>
+                                <div className="mt-2 flex gap-2">
+                                  <button type="button" onClick={() => loadProject(project.id)} className="rounded bg-blue-700 px-2 py-1 text-[10px] font-black text-white hover:bg-blue-800">Load</button>
+                                  <button type="button" onClick={() => deleteProject(project.id, project.projectName)} className="rounded bg-red-600 px-2 py-1 text-[10px] font-black text-white hover:bg-red-700">Delete</button>
+                                </div>
+                              </div>
                             ))
                           )}
                         </div>
@@ -3994,7 +4132,19 @@ export default function Home() {
                   )}
                 </div>
                 <div>
-                  <div className="mb-2 text-xs uppercase tracking-wider text-red-500">Account</div>
+                  <button type="button" onClick={() => setShowProfileMenu((value) => !value)} className="rp-menu-heading account"><span>Profile</span><span>{showProfileMenu ? "▾" : "▸"}</span></button>
+                  {showProfileMenu && (
+                    <div className="mt-2 space-y-2 pl-2">
+                      <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700">
+                        <div className="break-all font-black text-slate-950">{user.email}</div>
+                        <div className="mt-1">Role: {authRole}</div>
+                      </div>
+                      <button type="button" onClick={sendCurrentUserPasswordReset} className="rp-menu-item"><span>Password reset</span><span className="text-xs">Email</span></button>
+                    </div>
+                  )}
+                </div>
+                <div>
+                  <div className="mb-2 text-xs uppercase tracking-wider text-red-400">Account</div>
                   <button type="button" onClick={logout} className="rp-menu-item danger"><span>Logout</span><span className="text-xs">Exit</span></button>
                 </div>
               </nav>
@@ -4142,9 +4292,12 @@ export default function Home() {
         {plannerView === "simple" && showPlanPanel && (
           <section id="plan-panel" className="mb-6 rounded-2xl border border-slate-200 bg-white/75 bg-cover bg-center p-5 shadow-xl" style={{ backgroundImage: "linear-gradient(rgba(255,255,255,0.78), rgba(255,255,255,0.84)), url('/rebar-background.png')" }}>
             <div className="flex items-center justify-between gap-3"><h2 className="text-2xl font-bold text-gray-900">Project Information</h2><button type="button" onClick={() => setShowPlanPanel(false)} className="rounded-xl border px-3 py-2 text-sm font-bold hover:bg-slate-50">Hide Plan + PDF</button></div>
-            <div className="mt-3 grid gap-3 md:grid-cols-3">
+            <div className="mt-3 grid gap-3 md:grid-cols-4">
               <label className="font-semibold">Project name
                 <input value={projectName} onChange={(e) => setProjectName(e.target.value)} className="mt-1 w-full rounded border p-1.5 text-sm" />
+              </label>
+              <label className="font-semibold">Load plan PDF
+                <input type="file" accept=".pdf,.png,.jpg,.jpeg" onChange={(e) => handlePlanUpload(e.target.files?.[0])} className="mt-1 w-full rounded border bg-white p-1.5 text-sm" />
               </label>
               <div className="rounded border bg-gray-50 p-3">
                 <div className="text-sm font-semibold text-gray-600">PDF file</div>
@@ -4389,6 +4542,7 @@ export default function Home() {
                     <th className="p-2">Plan</th>
                     <th className="p-2">Rows</th>
                     <th className="p-2">Crops</th>
+                    <th className="p-2">Created</th>
                     <th className="p-2">Updated</th>
                     <th className="p-2">Actions</th>
                   </tr>
@@ -4401,7 +4555,8 @@ export default function Home() {
                       <td className="p-2 text-sm text-gray-700">{project.planFileName}</td>
                       <td className="p-2">{project.rowCount}</td>
                       <td className="p-2">{project.cropCount}</td>
-                      <td className="p-2 text-sm text-gray-600">{project.updatedAtLabel || ""}</td>
+                      <td className="p-2 text-sm text-gray-600">{project.createdAtLabel || "unknown"}</td>
+                      <td className="p-2 text-sm text-gray-600">{project.updatedAtLabel || "unknown"}</td>
                       <td className="p-2">
                         <div className="flex flex-wrap gap-2">
                           <button type="button" onClick={() => loadProject(project.id)} className="rounded bg-blue-700 px-3 py-1.5 font-semibold text-white hover:bg-blue-800">Load / Edit</button>
@@ -4564,6 +4719,7 @@ export default function Home() {
                 </div>
               </div>
 
+              {CALCULATED_PARAMETER_MODE_ENABLED && (
               <div className="grid gap-2">
                 <button
                   type="button"
@@ -4584,6 +4740,7 @@ export default function Home() {
                   </div>
                 )}
               </div>
+              )}
             </div>
           </section>
 
@@ -5146,35 +5303,42 @@ export default function Home() {
                 <RebarMiniDiagram type={activeDiagramType} />
               </div>
 
+              <div className="mb-4 flex flex-wrap items-center gap-2 rounded-xl border border-blue-200 bg-blue-50 p-3 text-sm">
+                <div className="mr-auto font-bold text-blue-950">Manual config file</div>
+                <button type="button" onClick={downloadManualConfigJson} className="rounded-lg border border-blue-300 bg-white px-3 py-2 font-bold text-blue-800 hover:bg-blue-100">Save manual config</button>
+                <button type="button" onClick={() => manualConfigImportInputRef.current?.click()} className="rounded-lg border border-blue-300 bg-white px-3 py-2 font-bold text-blue-800 hover:bg-blue-100">Load manual config</button>
+                <input ref={manualConfigImportInputRef} type="file" accept="application/json,.json" className="hidden" onChange={(e) => importManualConfigJson(e.target.files?.[0] || null)} />
+              </div>
+
               <div className="mb-4 rounded-xl border border-amber-300 bg-yellow-100 p-3">
                 <h4 className="mb-2 text-sm font-bold uppercase text-amber-900">Global params</h4>
                 <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
                   <label className="font-semibold">Stick len <InfoTip text="Stock rebar stick length used for splitting and buy quantity." /> {showingCalculatedParams && getCompareBadge(rebarGlobalParams.stickLength, getCalculatedGlobalValue("stickLength"))}
-                    <input value={displayedGlobalParams.stickLength} disabled={showingCalculatedParams} onChange={(e) => updateRebarGlobalParam("stickLength", e.target.value)} placeholder="20'" className="mt-1 w-full rounded border p-1.5 text-sm" />
+                    <input value={displayedGlobalParams.stickLength} onChange={(e) => updateRebarGlobalParam("stickLength", e.target.value)} placeholder="20'" className="mt-1 w-full rounded border p-1.5 text-sm" />
                   </label>
                   <label className="font-semibold">Default overlap <InfoTip text="Default lap splice/overlap used when a run continues onto another stick." /> {showingCalculatedParams && getCompareBadge(rebarGlobalParams.defaultOverlap, getCalculatedGlobalValue("defaultOverlap"))}
-                    <input value={displayedGlobalParams.defaultOverlap} disabled={showingCalculatedParams} onChange={(e) => updateRebarGlobalParam("defaultOverlap", e.target.value)} placeholder={'24"'} className="mt-1 w-full rounded border p-1.5 text-sm" />
+                    <input value={displayedGlobalParams.defaultOverlap} onChange={(e) => updateRebarGlobalParam("defaultOverlap", e.target.value)} placeholder={'24"'} className="mt-1 w-full rounded border p-1.5 text-sm" />
                   </label>
                   <label className="font-semibold">Default vertical to base overlap <InfoTip text="Default overlap/bend allowance where vertical bars tie into the base." /> {showingCalculatedParams && getCompareBadge(rebarGlobalParams.defaultVerticalToBase, getCalculatedGlobalValue("defaultVerticalToBase"))}
-                    <input value={displayedGlobalParams.defaultVerticalToBase} disabled={showingCalculatedParams} onChange={(e) => updateRebarGlobalParam("defaultVerticalToBase", e.target.value)} placeholder={'6"'} className="mt-1 w-full rounded border p-1.5 text-sm" />
+                    <input value={displayedGlobalParams.defaultVerticalToBase} onChange={(e) => updateRebarGlobalParam("defaultVerticalToBase", e.target.value)} placeholder={'6"'} className="mt-1 w-full rounded border p-1.5 text-sm" />
                   </label>
                   <label className="font-semibold">Default rebar for footing / walls <InfoTip text="Default bar size for footing, base, wall, and similar rows." /> {showingCalculatedParams && getCompareBadge(rebarGlobalParams.foundationRebarSize, getCalculatedGlobalValue("foundationRebarSize"))}
-                    <input value={displayedGlobalParams.foundationRebarSize} disabled={showingCalculatedParams} onChange={(e) => updateRebarGlobalParam("foundationRebarSize", e.target.value)} placeholder="#4" className="mt-1 w-full rounded border p-1.5 text-sm" />
+                    <input value={displayedGlobalParams.foundationRebarSize} onChange={(e) => updateRebarGlobalParam("foundationRebarSize", e.target.value)} placeholder="#4" className="mt-1 w-full rounded border p-1.5 text-sm" />
                   </label>
                   <label className="font-semibold">Default rebar for piers <InfoTip text="Default bar size used for pier vertical bars and H-circles when not overridden." /> {showingCalculatedParams && getCompareBadge(rebarGlobalParams.pierRebarSize, getCalculatedGlobalValue("pierRebarSize"))}
-                    <input value={displayedGlobalParams.pierRebarSize} disabled={showingCalculatedParams} onChange={(e) => updateRebarGlobalParam("pierRebarSize", e.target.value)} placeholder="#4" className="mt-1 w-full rounded border p-1.5 text-sm" />
+                    <input value={displayedGlobalParams.pierRebarSize} onChange={(e) => updateRebarGlobalParam("pierRebarSize", e.target.value)} placeholder="#4" className="mt-1 w-full rounded border p-1.5 text-sm" />
                   </label>
                 </div>
               </div>
 
               <div className="mb-2 rounded border border-amber-200 bg-amber-50 px-2 py-1 text-xs font-semibold text-amber-900">Manual rows below are compact one-line entry rows. Use Add rebar info at the bottom.</div>
 
-              {plannerView === "advanced" && (
+              {CALCULATED_PARAMETER_MODE_ENABLED && plannerView === "advanced" && (
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded border bg-white p-3">
                 <div>
                   <div className="font-bold">Manual entry data vs calculated data</div>
                   <div className="text-xs text-gray-600">
-                    Use the buttons to flip the parameter form between your manual entry and the calculated PDF values.
+                    Use this area to compare your manual entry against calculated PDF values. The editable form below always stays manual so typing/backspace works normally.
                   </div>
                 </div>
                 <div className="flex flex-wrap gap-2">
@@ -5193,7 +5357,7 @@ export default function Home() {
                     }}
                     className={`rounded px-3 py-2 font-semibold ${paramViewMode === "calculated" ? "bg-blue-700 text-white" : "border hover:bg-gray-50"}`}
                   >
-                    Show calculated values
+                    Compare calculated values
                   </button>
                   <button type="button" onClick={() => setShowParamComparison((current) => !current)} className="rounded border px-3 py-2 font-semibold hover:bg-gray-50">
                     {showParamComparison ? "Hide comparison" : "Show comparison"}
@@ -5202,13 +5366,13 @@ export default function Home() {
               </div>
               )}
 
-              {plannerView === "advanced" && showingCalculatedParams && (
+              {CALCULATED_PARAMETER_MODE_ENABLED && plannerView === "advanced" && showingCalculatedParams && (
                 <div className="mb-3 rounded border border-blue-300 bg-blue-50 p-3 text-sm text-blue-950">
                   Showing calculated PDF values in the form below. Fields are read-only here. Match badges show Same / Different / Missing from PDF / New from PDF compared with your manual entry.
                 </div>
               )}
 
-              {plannerView === "advanced" && showParamComparison && (
+              {CALCULATED_PARAMETER_MODE_ENABLED && plannerView === "advanced" && showParamComparison && (
                 <div className="mb-4 rounded border border-blue-200 bg-blue-50 p-3 text-sm">
                   <div className="mb-3 font-bold text-blue-950">Comparison {calculatedAt ? `(calculated ${calculatedAt})` : "(not calculated yet)"}</div>
                   {calculatedRows.length === 0 ? (
@@ -5259,7 +5423,7 @@ export default function Home() {
               )}
 
               <div className="mb-3 flex justify-end">
-                <button type="button" onClick={() => addRebarInfo("top")} disabled={showingCalculatedParams} className="hidden rounded bg-blue-700 px-3 py-2 font-semibold text-white hover:bg-blue-800 disabled:cursor-not-allowed disabled:bg-gray-400">Add rebar info <InfoTip text="Adds a new empty rebar parameter row at this location." /></button>
+                <button type="button" onClick={() => addRebarInfo("top")} className="hidden rounded bg-blue-700 px-3 py-2 font-semibold text-white hover:bg-blue-800 disabled:cursor-not-allowed disabled:bg-gray-400">Add rebar info <InfoTip text="Adds a new empty rebar parameter row at this location." /></button>
               </div>
 
               <div className="grid gap-1 compact-manual-rows">
@@ -5267,17 +5431,17 @@ export default function Home() {
                   const isNewEmptyRow = newEmptyRowIds.includes(row.id);
                   const miniInputClass = "rp-mini-input";
                   const miniSelectClass = "rp-mini-select";
-                  const RowField = ({ label, value, field, placeholder = "", className = "w-24", info }: { label: string; value: string; field: keyof RebarInfoRow; placeholder?: string; className?: string; info?: string }) => {
+                  const rowField = ({ label, value, field, placeholder = "", className = "w-24", info }: { label: ReactNode; value: string; field: keyof RebarInfoRow; placeholder?: string; className?: string; info?: string }) => {
                     const hasUnitError = lengthUnitErrorFields.includes(rowFieldErrorKey(row.id, field));
                     return (
-                      <label className={`rp-mini-field ${className}`} title={hasUnitError ? `${label}: add a unit like ', ", ft, or in.` : (info || label)}>
+                      <label className={`rp-mini-field ${className}`} title={hasUnitError ? `${String(label)}: add a unit like ', ", ft, or in.` : (info || String(label))}>
                         <span>{label}{info ? <InfoTip text={info} /> : null}</span>
                         <input value={value} onChange={(e) => updateRebarInfoRow(row.id, field, e.target.value)} placeholder={placeholder} className={`${miniInputClass} ${hasUnitError ? "border-2 border-red-600 bg-red-50" : ""}`} />
                       </label>
                     );
                   };
-                  const RowSelect = ({ label, value, field, options, className = "w-24", info }: { label: string; value: string; field: keyof RebarInfoRow; options: string[]; className?: string; info?: string }) => (
-                    <label className={`rp-mini-field ${className}`} title={info || label}>
+                  const rowSelect = ({ label, value, field, options, className = "w-24", info }: { label: ReactNode; value: string; field: keyof RebarInfoRow; options: string[]; className?: string; info?: string }) => (
+                    <label className={`rp-mini-field ${className}`} title={info || String(label)}>
                       <span>{label}{info ? <InfoTip text={info} /> : null}</span>
                       <select value={value} onChange={(e) => updateRebarInfoRow(row.id, field, e.target.value)} className={miniSelectClass}>
                         {options.map((option) => <option key={option} value={option}>{option || "Select"}</option>)}
@@ -5285,7 +5449,7 @@ export default function Home() {
                     </label>
                   );
                   return (
-                  <div key={row.id} id={`rebar-row-${row.id}`} data-rebar-type={row.itemType} className={`rp-param-row rounded-lg border px-2 py-1 text-[11px] transition ${isNewEmptyRow ? "border-amber-500 bg-yellow-100" : "border-amber-300 bg-yellow-50"} ${showingCalculatedParams ? "pointer-events-none opacity-95" : ""}`}>
+                  <div key={row.id} id={`rebar-row-${row.id}`} data-rebar-type={row.itemType} className={`rp-param-row rounded-lg border px-2 py-1 text-[11px] transition ${isNewEmptyRow ? "border-amber-500 bg-yellow-100" : "border-amber-300 bg-yellow-50"}`}>
                     {isNewEmptyRow && <div className="mb-1 rounded border border-amber-400 bg-yellow-100 px-2 py-1 text-[11px] font-bold text-amber-900">NEW EMPTY ROW — enter or change any value and this warning will disappear.</div>}
                     <div className="rp-one-line-row">
                       <label className="rp-mini-field w-64" title="Choose what kind of rebar assembly this row describes: base/bottom, horizontal continuous, vertical, pier, or misc.">
@@ -5294,84 +5458,84 @@ export default function Home() {
                           {rebarInfoTypes.map((type) => <option key={type}>{type}</option>)}
                         </select>
                       </label>
-                      <RowField label="Location / Segment" info="Physical area or row name, for example SideWall Bottom, EndWall Horizontal, Pier Cage, or custom location." value={row.segment} field="segment" placeholder="Name" className="w-64" />
-                      <RowField label="Rebar Size" info="Bar size designation, for example #3, #4, #5. This is not the quantity." value={row.rebarSize} field="rebarSize" placeholder={row.itemType === "Pier" ? rebarGlobalParams.pierRebarSize : rebarGlobalParams.foundationRebarSize} className="w-36" />
-                      <RowField label={row.itemType === "Pier" ? "Pier Count" : "Copies"} info={row.itemType === "Pier" ? "Number of identical pier cages to generate from this row." : "Number of identical copies of this whole rebar assembly to generate, for example 2 side walls."} value={row.duplicateTimes} field="duplicateTimes" placeholder={row.itemType === "Pier" ? "14" : "2"} className="w-36" />
+                      {rowField({ label: "Location / Segment", info: "Physical area or row name, for example SideWall Bottom, EndWall Horizontal, Pier Cage, or custom location.", value: row.segment, field: "segment", placeholder: "Name", className: "w-64" })}
+                      {rowField({ label: "Rebar Size", info: "Bar size designation, for example #3, #4, #5. This is not the quantity.", value: row.rebarSize, field: "rebarSize", placeholder: row.itemType === "Pier" ? rebarGlobalParams.pierRebarSize : rebarGlobalParams.foundationRebarSize, className: "w-36" })}
+                      {rowField({ label: row.itemType === "Pier" ? "Pier Count" : "Copies", info: row.itemType === "Pier" ? "Number of identical pier cages to generate from this row." : "Number of identical copies of this whole rebar assembly to generate, for example 2 side walls.", value: row.duplicateTimes, field: "duplicateTimes", placeholder: row.itemType === "Pier" ? "14" : "2", className: "w-36" })}
 
                       {row.itemType === "Base/Bottom rebar" && (
                         <>
                           <span className="rp-line-break" /><span className="rp-row-tag">Continuous longitudinals</span>
-                          <RowField label="Bar Count" info="Number of continuous parallel bars or nested loops in this group. Use N/A when not used." value={row.number} field="number" placeholder="N/A" className="w-28" />
-                          <RowField label="Design Length" info="Overall design/run length before the app applies clearance, spacing, laps, bends, and stock splitting." value={row.length} field="length" placeholder="52'" className="w-28" />
-                          <RowField label="Bar Spacing" info="Center-to-center spacing between adjacent bars." value={row.spacingBetween} field="spacingBetween" placeholder={'6"'} className="w-28" />
+                          {rowField({ label: "Bar Count", info: "Number of continuous parallel bars or nested loops in this group. Use N/A when not used.", value: row.number, field: "number", placeholder: "N/A", className: "w-28" })}
+                          {rowField({ label: "Design Length", info: "Overall design/run length before the app applies clearance, spacing, laps, bends, and stock splitting.", value: row.length, field: "length", placeholder: "52'", className: "w-28" })}
+                          {rowField({ label: "Bar Spacing", info: "Center-to-center spacing between adjacent bars.", value: row.spacingBetween, field: "spacingBetween", placeholder: '6"', className: "w-28" })}
                           <span className="rp-line-break" /><span className="rp-row-tag">Start end</span>
-                          <RowSelect label="Bent?" info="Yes if this end has a bend, hook, return, or lap leg." value={row.side1Bent} field="side1Bent" options={["", "Yes", "No"]} className="w-20" />
-                          <RowField label="Turn Angle" info="Bend angle in degrees, for example 90." value={row.side1TurnAngle} field="side1TurnAngle" placeholder="90" className="w-28" />
-                          <RowField label="Bent Return Length" info="Length of bent return, hook, lap, or overlap. Include units, for example 24&quot;." value={row.side1BentLength} field="side1BentLength" placeholder={'24"'} className="w-32" />
+                          {rowSelect({ label: "Bent?", info: "Yes if this end has a bend, hook, return, or lap leg.", value: row.side1Bent, field: "side1Bent", options: ["", "Yes", "No"], className: "w-20" })}
+                          {rowField({ label: "Turn Angle", info: "Bend angle in degrees, for example 90.", value: row.side1TurnAngle, field: "side1TurnAngle", placeholder: "90", className: "w-28" })}
+                          {rowField({ label: "Bent Return Length", info: "Length of bent return, hook, lap, or overlap. Include units, for example 24&quot;.", value: row.side1BentLength, field: "side1BentLength", placeholder: '24"', className: "w-32" })}
                           <span className="rp-line-break" /><span className="rp-row-tag">Finish end</span>
-                          <RowSelect label="Bent?" info="Yes if this end has a bend, hook, return, or lap leg." value={row.side2Bent} field="side2Bent" options={["", "Yes", "No"]} className="w-20" />
-                          <RowField label="Turn Angle" info="Bend angle in degrees, for example 90." value={row.side2TurnAngle} field="side2TurnAngle" placeholder="90" className="w-28" />
-                          <RowField label="Bent Return Length" info="Length of bent return, hook, lap, or overlap. Include units, for example 24&quot;." value={row.side2BentLength} field="side2BentLength" placeholder={'24"'} className="w-32" />
+                          {rowSelect({ label: "Bent?", info: "Yes if this end has a bend, hook, return, or lap leg.", value: row.side2Bent, field: "side2Bent", options: ["", "Yes", "No"], className: "w-20" })}
+                          {rowField({ label: "Turn Angle", info: "Bend angle in degrees, for example 90.", value: row.side2TurnAngle, field: "side2TurnAngle", placeholder: "90", className: "w-28" })}
+                          {rowField({ label: "Bent Return Length", info: "Length of bent return, hook, lap, or overlap. Include units, for example 24&quot;.", value: row.side2BentLength, field: "side2BentLength", placeholder: '24"', className: "w-32" })}
                           <span className="rp-line-break" /><span className="rp-row-tag">Traverse bars</span>
-                          <RowField label="Bar Count" info="Number of traverse/cross bars. Use N/A when the app should calculate or skip it." value={row.traverseNumber} field="traverseNumber" placeholder="N/A" className="w-28" />
-                          <RowField label="Bar Spacing" info="Center-to-center spacing between adjacent bars." value={row.traverseSpacing} field="traverseSpacing" placeholder={'12"'} className="w-28" />
-                          <RowField label="Bar Length" info="Length of each traverse/cross bar. Include units, for example 12&quot;." value={row.traverseLength} field="traverseLength" placeholder={'12"'} className="w-28" />
+                          {rowField({ label: "Bar Count", info: "Number of traverse/cross bars. Use N/A when the app should calculate or skip it.", value: row.traverseNumber, field: "traverseNumber", placeholder: "N/A", className: "w-28" })}
+                          {rowField({ label: "Bar Spacing", info: "Center-to-center spacing between adjacent bars.", value: row.traverseSpacing, field: "traverseSpacing", placeholder: '12"', className: "w-28" })}
+                          {rowField({ label: "Bar Length", info: "Length of each traverse/cross bar. Include units, for example 12&quot;.", value: row.traverseLength, field: "traverseLength", placeholder: '12"', className: "w-28" })}
                           <span className="rp-line-break" /><span className="rp-row-tag">Clearance</span>
-                          <RowField label="Top Clearance" info="Concrete cover/clearance from top surface to rebar." value={row.clearanceTop} field="clearanceTop" placeholder={'3"'} className="w-32" />
-                          <RowField label="Bottom Clearance" info="Concrete cover/clearance from bottom/soil surface to rebar." value={row.clearanceBottom} field="clearanceBottom" placeholder={'3"'} className="w-32" />
-                          <RowField label="Side Clearance" info="Concrete cover/clearance from side soil/form edge to rebar." value={row.clearanceSides} field="clearanceSides" placeholder={'3"'} className="w-32" />
+                          {rowField({ label: "Top Clearance", info: "Concrete cover/clearance from top surface to rebar.", value: row.clearanceTop, field: "clearanceTop", placeholder: '3"', className: "w-32" })}
+                          {rowField({ label: "Bottom Clearance", info: "Concrete cover/clearance from bottom/soil surface to rebar.", value: row.clearanceBottom, field: "clearanceBottom", placeholder: '3"', className: "w-32" })}
+                          {rowField({ label: "Side Clearance", info: "Concrete cover/clearance from side soil/form edge to rebar.", value: row.clearanceSides, field: "clearanceSides", placeholder: '3"', className: "w-32" })}
                         </>
                       )}
 
                       {row.itemType === "Horiz continues longtidues" && (
                         <>
                           <span className="rp-line-break" /><span className="rp-row-tag">Horizontal continuous</span>
-                          <RowField label="Design Length" info="Overall design/run length before the app applies clearance, spacing, laps, bends, and stock splitting." value={row.length} field="length" placeholder="52'" className="w-28" />
-                          <RowField label="Bar Count" info="Number of continuous parallel bars or nested loops in this group. Use N/A when not used." value={row.number} field="number" placeholder="1" className="w-28" />
-                          <RowField label="Bar Spacing" info="Center-to-center spacing between adjacent bars." value={row.spacingBetween} field="spacingBetween" placeholder={'12"'} className="w-28" />
+                          {rowField({ label: "Design Length", info: "Overall design/run length before the app applies clearance, spacing, laps, bends, and stock splitting.", value: row.length, field: "length", placeholder: "52'", className: "w-28" })}
+                          {rowField({ label: "Bar Count", info: "Number of continuous parallel bars or nested loops in this group. Use N/A when not used.", value: row.number, field: "number", placeholder: "1", className: "w-28" })}
+                          {rowField({ label: "Bar Spacing", info: "Center-to-center spacing between adjacent bars.", value: row.spacingBetween, field: "spacingBetween", placeholder: '12"', className: "w-28" })}
                           <span className="rp-line-break" /><span className="rp-row-tag">Start end</span>
-                          <RowSelect label="Bent?" info="Yes if this end has a bend, hook, return, or lap leg." value={row.side1Bent} field="side1Bent" options={["", "Yes", "No"]} className="w-20" />
-                          <RowField label="Turn Angle" info="Bend angle in degrees, for example 90." value={row.side1TurnAngle} field="side1TurnAngle" placeholder="90" className="w-28" />
-                          <RowField label="Bent Return Length" info="Length of bent return, hook, lap, or overlap. Include units, for example 24&quot;." value={row.side1BentLength} field="side1BentLength" placeholder={'24"'} className="w-32" />
+                          {rowSelect({ label: "Bent?", info: "Yes if this end has a bend, hook, return, or lap leg.", value: row.side1Bent, field: "side1Bent", options: ["", "Yes", "No"], className: "w-20" })}
+                          {rowField({ label: "Turn Angle", info: "Bend angle in degrees, for example 90.", value: row.side1TurnAngle, field: "side1TurnAngle", placeholder: "90", className: "w-28" })}
+                          {rowField({ label: "Bent Return Length", info: "Length of bent return, hook, lap, or overlap. Include units, for example 24&quot;.", value: row.side1BentLength, field: "side1BentLength", placeholder: '24"', className: "w-32" })}
                           <span className="rp-line-break" /><span className="rp-row-tag">Finish end</span>
-                          <RowSelect label="Bent?" info="Yes if this end has a bend, hook, return, or lap leg." value={row.side2Bent} field="side2Bent" options={["", "Yes", "No"]} className="w-20" />
-                          <RowField label="Turn Angle" info="Bend angle in degrees, for example 90." value={row.side2TurnAngle} field="side2TurnAngle" placeholder="90" className="w-28" />
-                          <RowField label="Bent Return Length" info="Length of bent return, hook, lap, or overlap. Include units, for example 24&quot;." value={row.side2BentLength} field="side2BentLength" placeholder={'24"'} className="w-32" />
+                          {rowSelect({ label: "Bent?", info: "Yes if this end has a bend, hook, return, or lap leg.", value: row.side2Bent, field: "side2Bent", options: ["", "Yes", "No"], className: "w-20" })}
+                          {rowField({ label: "Turn Angle", info: "Bend angle in degrees, for example 90.", value: row.side2TurnAngle, field: "side2TurnAngle", placeholder: "90", className: "w-28" })}
+                          {rowField({ label: "Bent Return Length", info: "Length of bent return, hook, lap, or overlap. Include units, for example 24&quot;.", value: row.side2BentLength, field: "side2BentLength", placeholder: '24"', className: "w-32" })}
                         </>
                       )}
 
                       {row.itemType === "Vertical Rebar" && (
                         <>
                           <span className="rp-line-break" /><span className="rp-row-tag">Vertical L bars</span>
-                          <RowField label="Bar Spacing" info="Center-to-center spacing between adjacent bars." value={row.spacing} field="spacing" placeholder={'18"'} className="w-28" />
-                          <RowField label="Bar Count" info="Manual quantity, or N/A to calculate from run length and spacing." value={row.count} field="count" placeholder="N/A" className="w-28" />
-                          <RowField label="Straight Length" info="Straight vertical portion before bent overlap/return." value={row.length} field="length" placeholder={'24"'} className="w-32" />
-                          <RowField label="Calculate Run" info="Run length used to calculate quantity when Bar Count is N/A." value={row.calcLength} field="calcLength" placeholder="52'" className="w-28" />
+                          {rowField({ label: "Bar Spacing", info: "Center-to-center spacing between adjacent bars.", value: row.spacing, field: "spacing", placeholder: '18"', className: "w-28" })}
+                          {rowField({ label: "Bar Count", info: "Manual quantity, or N/A to calculate from run length and spacing.", value: row.count, field: "count", placeholder: "N/A", className: "w-28" })}
+                          {rowField({ label: "Straight Length", info: "Straight vertical portion before bent overlap/return.", value: row.length, field: "length", placeholder: '24"', className: "w-32" })}
+                          {rowField({ label: "Calculate Run", info: "Run length used to calculate quantity when Bar Count is N/A.", value: row.calcLength, field: "calcLength", placeholder: "52'", className: "w-28" })}
                           <span className="rp-line-break" /><span className="rp-row-tag">Start end</span>
-                          <RowSelect label="Bent?" info="Yes if this end has a bend, hook, return, or lap leg." value={row.side1Bent} field="side1Bent" options={["", "Yes", "No"]} className="w-20" />
-                          <RowField label="Turn Angle" info="Bend angle in degrees, for example 90." value={row.side1TurnAngle} field="side1TurnAngle" placeholder="90" className="w-28" />
-                          <RowField label="Bent Return Length" info="Length of bent return, hook, lap, or overlap. Include units, for example 24&quot;." value={row.side1BentLength} field="side1BentLength" placeholder={'6"'} className="w-28" />
+                          {rowSelect({ label: "Bent?", info: "Yes if this end has a bend, hook, return, or lap leg.", value: row.side1Bent, field: "side1Bent", options: ["", "Yes", "No"], className: "w-20" })}
+                          {rowField({ label: "Turn Angle", info: "Bend angle in degrees, for example 90.", value: row.side1TurnAngle, field: "side1TurnAngle", placeholder: "90", className: "w-28" })}
+                          {rowField({ label: "Bent Return Length", info: "Length of bent return, hook, lap, or overlap. Include units, for example 24&quot;.", value: row.side1BentLength, field: "side1BentLength", placeholder: '6"', className: "w-28" })}
                           <span className="rp-line-break" /><span className="rp-row-tag">Finish end</span>
-                          <RowSelect label="Bent?" info="Yes if this end has a bend, hook, return, or lap leg." value={row.side2Bent} field="side2Bent" options={["", "Yes", "No"]} className="w-20" />
-                          <RowField label="Turn Angle" info="Bend angle in degrees, for example 90." value={row.side2TurnAngle} field="side2TurnAngle" placeholder="90" className="w-28" />
-                          <RowField label="Bent Return Length" info="Length of bent return, hook, lap, or overlap. Include units, for example 24&quot;." value={row.side2BentLength} field="side2BentLength" placeholder={'6"'} className="w-28" />
+                          {rowSelect({ label: "Bent?", info: "Yes if this end has a bend, hook, return, or lap leg.", value: row.side2Bent, field: "side2Bent", options: ["", "Yes", "No"], className: "w-20" })}
+                          {rowField({ label: "Turn Angle", info: "Bend angle in degrees, for example 90.", value: row.side2TurnAngle, field: "side2TurnAngle", placeholder: "90", className: "w-28" })}
+                          {rowField({ label: "Bent Return Length", info: "Length of bent return, hook, lap, or overlap. Include units, for example 24&quot;.", value: row.side2BentLength, field: "side2BentLength", placeholder: '6"', className: "w-28" })}
                         </>
                       )}
 
                       {row.itemType === "Pier" && (
                         <>
                           <span className="rp-line-break" /><span className="rp-row-tag">Pier cage</span>
-                          <RowField label="Pier Diameter" info="Outside concrete pier diameter. Include units, for example 30&quot;." value={row.diameter} field="diameter" placeholder={'30"'} className="w-28" />
-                          <RowField label="Cage Height" info="Pier cage/bar height. Include units, for example 30&quot;." value={row.length} field="length" placeholder={'30"'} className="w-28" />
-                          <RowField label="Hoop Count" info="Number of horizontal circles/hoops. Use N/A to calculate from spacing." value={row.horizontalCircleCount} field="horizontalCircleCount" placeholder="N/A" className="w-28" />
-                          <RowField label="Vertical Bar Count" info="Number of vertical bars per pier cage." value={row.numVerticalBars} field="numVerticalBars" placeholder="6" className="w-32" />
-                          <RowField label="Bar Spacing" info="Center-to-center spacing between adjacent bars." value={row.spacing} field="spacing" placeholder={'8"'} className="w-16" />
-                          <RowSelect label="Bent?" info="Yes if this end has a bend, hook, return, or lap leg." value={row.verticalBent} field="verticalBent" options={["", "Yes", "No"]} className="w-20" />
-                          <RowField label="Bent Return Length" info="Length of bent return, hook, lap, or overlap. Include units, for example 24&quot;." value={row.verticalBentLength} field="verticalBentLength" placeholder={'6"'} className="w-28" />
+                          {rowField({ label: "Pier Diameter", info: "Outside concrete pier diameter. Include units, for example 30&quot;.", value: row.diameter, field: "diameter", placeholder: '30"', className: "w-28" })}
+                          {rowField({ label: "Cage Height", info: "Pier cage/bar height. Include units, for example 30&quot;.", value: row.length, field: "length", placeholder: '30"', className: "w-28" })}
+                          {rowField({ label: "Hoop Count", info: "Number of horizontal circles/hoops. Use N/A to calculate from spacing.", value: row.horizontalCircleCount, field: "horizontalCircleCount", placeholder: "N/A", className: "w-28" })}
+                          {rowField({ label: "Vertical Bar Count", info: "Number of vertical bars per pier cage.", value: row.numVerticalBars, field: "numVerticalBars", placeholder: "6", className: "w-32" })}
+                          {rowField({ label: "Bar Spacing", info: "Center-to-center spacing between adjacent bars.", value: row.spacing, field: "spacing", placeholder: '8"', className: "w-16" })}
+                          {rowSelect({ label: "Bent?", info: "Yes if this end has a bend, hook, return, or lap leg.", value: row.verticalBent, field: "verticalBent", options: ["", "Yes", "No"], className: "w-20" })}
+                          {rowField({ label: "Bent Return Length", info: "Length of bent return, hook, lap, or overlap. Include units, for example 24&quot;.", value: row.verticalBentLength, field: "verticalBentLength", placeholder: '6"', className: "w-28" })}
                           <span className="rp-line-break" /><span className="rp-row-tag">Clearance</span>
-                          <RowField label="Top Clearance" info="Concrete cover/clearance from top surface to rebar." value={row.clearanceTop} field="clearanceTop" placeholder={'3"'} className="w-32" />
-                          <RowField label="Bottom Clearance" info="Concrete cover/clearance from bottom/soil surface to rebar." value={row.clearanceBottom} field="clearanceBottom" placeholder={'3"'} className="w-32" />
-                          <RowField label="Side Clearance" info="Concrete cover/clearance from side soil/form edge to rebar." value={row.clearanceSides} field="clearanceSides" placeholder={'3"'} className="w-32" />
+                          {rowField({ label: "Top Clearance", info: "Concrete cover/clearance from top surface to rebar.", value: row.clearanceTop, field: "clearanceTop", placeholder: '3"', className: "w-32" })}
+                          {rowField({ label: "Bottom Clearance", info: "Concrete cover/clearance from bottom/soil surface to rebar.", value: row.clearanceBottom, field: "clearanceBottom", placeholder: '3"', className: "w-32" })}
+                          {rowField({ label: "Side Clearance", info: "Concrete cover/clearance from side soil/form edge to rebar.", value: row.clearanceSides, field: "clearanceSides", placeholder: '3"', className: "w-32" })}
                         </>
                       )}
 
@@ -5424,7 +5588,7 @@ export default function Home() {
               </div>
 
               <div className="mt-4 flex justify-end">
-                <button type="button" onClick={() => addRebarInfo("bottom")} disabled={showingCalculatedParams} className="rounded bg-blue-700 px-3 py-2 font-semibold text-white hover:bg-blue-800 disabled:cursor-not-allowed disabled:bg-gray-400">Add rebar info <InfoTip text="Adds a new empty rebar parameter row at this location." /></button>
+                <button type="button" onClick={() => addRebarInfo("bottom")} className="rounded bg-blue-700 px-3 py-2 font-semibold text-white hover:bg-blue-800 disabled:cursor-not-allowed disabled:bg-gray-400">Add rebar info <InfoTip text="Adds a new empty rebar parameter row at this location." /></button>
               </div>
             </div>
           </div>

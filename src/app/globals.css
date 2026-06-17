@@ -1496,3 +1496,11 @@ button:disabled {
 /* Top summary and visible page panels use the rebar background softly */
 #rebar-input .rounded-xl.border-amber-300 input { background: #fffef2 !important; }
 .rp-menu-item:disabled { opacity: .55 !important; cursor: wait !important; }
+
+/* Compact Rebar Planner workbench sizing */
+.rp-param-row { font-size: 10px; }
+.rp-mini-field > span { font-size: 10px; line-height: 1.05; }
+.rp-mini-input, .rp-mini-select { min-height: 24px; padding: 3px 6px !important; font-size: 12px !important; }
+.rp-row-tag { font-size: 10px; padding: 2px 7px; }
+.rp-one-line-row { gap: 4px 6px; }
+.rp-menu-item, .rp-menu-heading { font-size: 13px; padding-top: 7px; padding-bottom: 7px; }

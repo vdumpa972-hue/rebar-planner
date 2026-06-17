@@ -1,17 +1,74 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
-import { auth } from "@/lib/firebase";
+import { useState, type FormEvent } from "react";
+import { createUserWithEmailAndPassword, sendPasswordResetEmail, updateProfile } from "firebase/auth";
+import { doc, serverTimestamp, setDoc } from "firebase/firestore";
+import { auth, db } from "@/lib/firebase";
 
 const plans = [
   { key: "basic", name: "Basic", price: "$29/mo", tagline: "For homeowners and small jobs", features: ["Manual rebar parameters", "PDF crop evidence", "CSV cut schedule", "Saved projects"] },
   { key: "pro", name: "Pro", price: "$79/mo", tagline: "For owner-builders and contractors", features: ["Everything in Basic", "Shop package export", "Project backups", "Review workflow", "Future PDF extraction tools"] },
 ];
 
+function normalizeEmail(value: string) {
+  return value.trim().toLowerCase();
+}
+
+function makeTempPassword() {
+  return `Rp-${Math.random().toString(36).slice(2)}-${Date.now()}!A7`;
+}
+
 export default function PricingPage() {
   const [busyPlan, setBusyPlan] = useState("");
+  const [trialBusy, setTrialBusy] = useState(false);
   const [message, setMessage] = useState("");
+  const [trialName, setTrialName] = useState("");
+  const [trialEmail, setTrialEmail] = useState("");
+  const [trialCompany, setTrialCompany] = useState("");
+  const [trialPhone, setTrialPhone] = useState("");
+  const [trialReadyEmail, setTrialReadyEmail] = useState("");
+
+  async function startTrial(e?: FormEvent<HTMLFormElement>) {
+    e?.preventDefault();
+    setMessage("");
+    setTrialReadyEmail("");
+    const email = normalizeEmail(trialEmail);
+    if (!email) {
+      setMessage("Enter an email address to start the free trial.");
+      return;
+    }
+    setTrialBusy(true);
+    try {
+      const displayName = trialName.trim() || trialCompany.trim() || email.split("@")[0];
+      const cred = await createUserWithEmailAndPassword(auth, email, makeTempPassword());
+      await updateProfile(cred.user, { displayName }).catch(() => {});
+      const now = Date.now();
+      const trialEndsAt = new Date(now + 30 * 24 * 60 * 60 * 1000).toISOString();
+      await setDoc(doc(db, "users", cred.user.uid), {
+        email,
+        username: email.split("@")[0],
+        displayName,
+        companyName: trialCompany.trim(),
+        phone: trialPhone.trim(),
+        role: "user",
+        status: "active",
+        planStatus: "trialing",
+        planName: "trial",
+        trialStartedAt: new Date(now).toISOString(),
+        trialEndsAt,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      }, { merge: true });
+      await sendPasswordResetEmail(auth, email);
+      setTrialReadyEmail(email);
+      setMessage("Trial account created. We sent a password setup email. Open that email first, set your password, then log in.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not start the trial right now.");
+    } finally {
+      setTrialBusy(false);
+    }
+  }
 
   async function startCheckout(plan: string) {
     setBusyPlan(plan);
@@ -40,7 +97,7 @@ export default function PricingPage() {
           <div>
             <div className="text-sm font-black uppercase tracking-[0.25em] text-blue-700">Rebar Planner</div>
             <h1 className="mt-2 text-4xl font-black">Pricing & Free Trial</h1>
-            <p className="mt-2 max-w-2xl text-slate-600">Start with a 14-day free trial. Stripe checkout is wired here; set your Stripe environment variables before going live.</p>
+            <p className="mt-2 max-w-2xl text-slate-600">Start a 30-day free trial, or purchase a monthly plan when you are ready.</p>
           </div>
           <div className="flex gap-2">
             <Link href="/" className="rounded-xl border border-slate-300 bg-white px-4 py-2 font-bold hover:bg-slate-100">Back to app</Link>
@@ -50,6 +107,28 @@ export default function PricingPage() {
         </div>
 
         {message && <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-3 font-semibold text-amber-900">{message}</div>}
+
+        <section className="mb-6 rounded-3xl border border-blue-200 bg-white p-6 shadow-xl">
+          <div className="grid gap-6 lg:grid-cols-[1fr_1.2fr]">
+            <div>
+              <div className="text-sm font-black uppercase tracking-[0.2em] text-blue-700">Free trial</div>
+              <h2 className="mt-2 text-3xl font-black">Create your trial workspace</h2>
+              <p className="mt-2 text-slate-600">Enter your information. We create the account and send a password setup email. After you set the password, log in and start working.</p>
+              {trialReadyEmail && <p className="mt-4 rounded-2xl bg-green-50 p-3 font-bold text-green-900">Trial ready for {trialReadyEmail}. Check that inbox for the password setup email.</p>}
+            </div>
+            <form onSubmit={startTrial} className="grid gap-3">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="grid gap-1 text-sm font-black text-slate-700">Name<input value={trialName} onChange={(e) => setTrialName(e.target.value)} className="rounded-xl border border-slate-300 px-3 py-2 font-semibold" placeholder="Your name" /></label>
+                <label className="grid gap-1 text-sm font-black text-slate-700">Company<input value={trialCompany} onChange={(e) => setTrialCompany(e.target.value)} className="rounded-xl border border-slate-300 px-3 py-2 font-semibold" placeholder="Company name" /></label>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="grid gap-1 text-sm font-black text-slate-700">Email<input value={trialEmail} onChange={(e) => setTrialEmail(e.target.value)} className="rounded-xl border border-slate-300 px-3 py-2 font-semibold" placeholder="email@example.com" type="email" required /></label>
+                <label className="grid gap-1 text-sm font-black text-slate-700">Phone<input value={trialPhone} onChange={(e) => setTrialPhone(e.target.value)} className="rounded-xl border border-slate-300 px-3 py-2 font-semibold" placeholder="Optional" /></label>
+              </div>
+              <button disabled={trialBusy} type="submit" className="rounded-2xl bg-blue-700 px-4 py-3 font-black text-white hover:bg-blue-800 disabled:opacity-60">{trialBusy ? "Creating trial..." : "Start 30-day free trial"}</button>
+            </form>
+          </div>
+        </section>
 
         <div className="grid gap-5 md:grid-cols-2">
           {plans.map((plan) => (
@@ -64,27 +143,17 @@ export default function PricingPage() {
               <ul className="mt-6 space-y-2 text-sm font-semibold text-slate-700">
                 {plan.features.map((feature) => <li key={feature}>✓ {feature}</li>)}
               </ul>
-              <button onClick={() => startCheckout(plan.key)} disabled={Boolean(busyPlan)} className="mt-6 w-full rounded-2xl bg-blue-700 px-4 py-3 font-black text-white hover:bg-blue-800 disabled:opacity-60">
-                {busyPlan === plan.key ? "Opening checkout..." : "Start free trial"}
-              </button>
+              <div className="mt-6 grid gap-2 sm:grid-cols-2">
+                <a href="#" onClick={(e) => { e.preventDefault(); document.querySelector("input[type='email']")?.scrollIntoView({ behavior: "smooth", block: "center" }); }} className="rounded-2xl bg-blue-700 px-4 py-3 text-center font-black text-white hover:bg-blue-800">
+                  Start free trial
+                </a>
+                <button onClick={() => startCheckout(plan.key)} disabled={Boolean(busyPlan)} className="rounded-2xl bg-slate-200 px-4 py-3 font-black text-slate-950 hover:bg-slate-300 disabled:opacity-60">
+                  {busyPlan === plan.key ? "Opening checkout..." : "Purchase"}
+                </button>
+              </div>
             </section>
           ))}
         </div>
-
-        <section className="mt-6 rounded-3xl border border-slate-200 bg-white p-6 shadow-xl">
-          <h2 className="text-xl font-black">Stripe setup needed before live billing</h2>
-          <div className="mt-3 grid gap-3 text-sm font-semibold text-slate-700 md:grid-cols-2">
-            <div className="rounded-2xl bg-slate-50 p-4">STRIPE_SECRET_KEY</div>
-            <div className="rounded-2xl bg-slate-50 p-4">STRIPE_PRICE_BASIC</div>
-            <div className="rounded-2xl bg-slate-50 p-4">STRIPE_PRICE_PRO</div>
-            <div className="rounded-2xl bg-slate-50 p-4">NEXT_PUBLIC_APP_URL</div>
-            <div className="rounded-2xl bg-slate-50 p-4">STRIPE_WEBHOOK_SECRET</div>
-          </div>
-        </section>
-
-        <section className="mt-6 rounded-3xl border border-blue-200 bg-blue-50 p-6 text-sm font-semibold text-blue-950">
-          Stripe webhook endpoint: <span className="font-black">/api/stripe/webhook</span>. Add it in Stripe Dashboard so checkout/subscription changes update the user plan automatically.
-        </section>
       </div>
     </main>
   );

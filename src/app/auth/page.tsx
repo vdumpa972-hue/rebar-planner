@@ -80,7 +80,7 @@ export default function AuthPage() {
 
     if (!snap.exists()) {
       dbRole = userEmail.toLowerCase() === OWNER_EMAIL ? "owner" : "user";
-      const trialEndsAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString();
+      const trialEndsAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
       await setDoc(ref, {
         email: userEmail,
         username: userEmail.split("@")[0],
@@ -128,7 +128,7 @@ export default function AuthPage() {
     try {
       const email = await resolveEmail(loginId);
       await sendPasswordResetEmail(auth, email);
-      setNotice("Password setup/reset email sent.");
+      setNotice("Password reset email sent.");
     }
     catch (e) { setError(e instanceof Error ? e.message : "Could not send reset email"); }
   }
@@ -144,7 +144,7 @@ export default function AuthPage() {
       <div className="field"><label>Password</label><input id="password" name="password" value={password} onChange={e=>setPassword(e.target.value)} type="password" autoComplete="current-password" /></div>
       <div className="splitButtons">
         <button disabled={loading} type="submit">Login</button>
-        <button disabled={loading} type="button" className="secondary" onClick={reset}>Forgot / Set password</button>
+        <button disabled={loading} type="button" className="secondary" onClick={reset}>Send password reset email</button>
       </div>
     </form>
   </main>;

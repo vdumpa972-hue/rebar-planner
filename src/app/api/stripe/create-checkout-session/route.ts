@@ -31,7 +31,7 @@ export async function POST(request: Request) {
     params.set("success_url", `${origin}/billing?checkout=success&plan=${encodeURIComponent(plan)}`);
     params.set("cancel_url", `${origin}/pricing?checkout=cancelled&plan=${encodeURIComponent(plan)}`);
     params.set("allow_promotion_codes", "true");
-    params.set("subscription_data[trial_period_days]", String(process.env.STRIPE_TRIAL_DAYS || "14"));
+    params.set("subscription_data[trial_period_days]", String(process.env.STRIPE_TRIAL_DAYS || "30"));
     if (body.email) params.set("customer_email", String(body.email));
     if (body.uid) params.set("client_reference_id", String(body.uid));
     params.set("metadata[app]", "rebar-planner");

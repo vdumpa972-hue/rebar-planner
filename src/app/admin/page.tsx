@@ -75,7 +75,7 @@ export default function PlannerAdminPage() {
   const [displayName, setDisplayName] = useState("");
   const [password, setPassword] = useState("FFLL972");
   const [role, setRole] = useState("user");
-  const [sendSetupEmail, setSendSetupEmail] = useState(true);
+  const [sendSetupEmail, setSendSetupEmail] = useState(false);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -143,7 +143,7 @@ export default function PlannerAdminPage() {
       await updateProfile(cred.user, { displayName: cleanDisplayName }).catch(() => {});
       await signOut(secondaryAuth).catch(() => {});
 
-      const trialEndsAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString();
+      const trialEndsAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
       await setDoc(doc(db, "users", cred.user.uid), {
         email: cleanEmail,
         username: cleanUsername,
@@ -154,7 +154,7 @@ export default function PlannerAdminPage() {
         planName: cleanRole === "owner" ? "owner" : "trial",
         trialStartedAt: new Date().toISOString(),
         trialEndsAt,
-        mustChangePassword: true,
+        mustChangePassword: false,
         app: "rebar-planner",
         createdByEmail: currentEmail,
         createdAt: serverTimestamp(),
@@ -242,7 +242,7 @@ export default function PlannerAdminPage() {
           <div className="field"><label>Username</label><input value={username} onChange={(e) => setUsername(makeUsername(e.target.value))} placeholder="john" autoComplete="username" /></div>
           <div className="field"><label>Temporary password</label><input value={password} onChange={(e) => setPassword(e.target.value)} type="text" /></div>
           <div className="field"><label>Role</label><select value={role} onChange={(e) => setRole(e.target.value)}>{allowedRoleOptions.map((item) => <option key={item} value={item}>{item}</option>)}</select></div>
-          <label className="checkRow"><input type="checkbox" checked={sendSetupEmail} onChange={(e) => setSendSetupEmail(e.target.checked)} /> Send password setup email</label>
+          <label className="checkRow"><input type="checkbox" checked={sendSetupEmail} onChange={(e) => setSendSetupEmail(e.target.checked)} /> Also send reset email</label>
           <button disabled={busy} onClick={createUser}>{busy ? "Creating..." : "Create user"}</button>
         </section>
 
