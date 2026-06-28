@@ -93,6 +93,14 @@ export function formatFeet(value: number): string {
   return `${feet}'-${inches}"`;
 }
 
+
+function formatBarIndexDelta(delta: number): string {
+  const rounded = Math.round(delta * 100) / 100;
+  if (Math.abs(rounded) < 0.001) return "same bar";
+  if (rounded > 0) return `+${rounded} position${Math.abs(rounded) === 1 ? "" : "s"}`;
+  return `${rounded} position${Math.abs(rounded) === 1 ? "" : "s"}`;
+}
+
 function functionNeedsOverlap(functionText: string): boolean {
   const clean = functionText.toLowerCase();
   return clean.includes("overlap") || clean.includes("lap");
@@ -800,6 +808,7 @@ type ManualRebarRowInput = {
   count?: string;
   number?: string;
   spacingBetween?: string;
+  baseLengthReference?: string;
   rebarSize?: string;
   duplicateTimes?: string;
   calcLength?: string;
@@ -1150,23 +1159,35 @@ export function generateManualRebarSchedule(params: {
         : baseStraightFeet;
       const leftBendFeet = manualEndExtra(row, 1, overlapFeet);
       const rightBendFeet = manualEndExtra(row, 2, overlapFeet);
+      const bentEndCount = (leftBendFeet > 0 ? 1 : 0) + (rightBendFeet > 0 ? 1 : 0);
+      const lengthReference = (row.baseLengthReference || "Outer H bar").toLowerCase();
+      const referenceBarIndex = !isBaseBottom || barCount <= 1
+        ? 0
+        : lengthReference.includes("inner")
+          ? barCount - 1
+          : lengthReference.includes("center")
+            ? (barCount - 1) / 2
+            : 0;
 
       for (let duplicateIndex = 0; duplicateIndex < duplicateTimes; duplicateIndex += 1) {
         const duplicateLabel = duplicateTimes > 1 ? `side ${duplicateIndex + 1} of ${duplicateTimes}` : "single side";
         for (let barIndex = 0; barIndex < barCount; barIndex += 1) {
           const offsetFeet = spacingFeet * barIndex;
-          const locationAdjustment = isBaseBottom
-            ? (leftBendFeet > 0 ? offsetFeet : 0) + (rightBendFeet > 0 ? offsetFeet : 0)
+          const referenceAdjustmentFeet = isBaseBottom
+            ? bentEndCount * spacingFeet * (referenceBarIndex - barIndex)
             : 0;
-          const straightFeet = Math.max(clearStraightBaseFeet - locationAdjustment, 0);
+          const straightFeet = Math.max(clearStraightBaseFeet + referenceAdjustmentFeet, 0);
           const positionName = barCount === 1 ? "single" : barIndex === 0 ? "outer" : barIndex === barCount - 1 ? "inner" : `middle ${barIndex}`;
           const clearanceNote = isBaseBottom && sideClearanceFeet > 0
-            ? `, straight run ${formatFeet(baseStraightFeet)} minus 2 x side clearance ${formatFeet(sideClearanceFeet)} = ${formatFeet(clearStraightBaseFeet)}`
+            ? `, ${row.baseLengthReference || "Outer H bar"} design ${formatFeet(baseStraightFeet)} minus 2 x side clearance ${formatFeet(sideClearanceFeet)} = ${formatFeet(clearStraightBaseFeet)}`
+            : "";
+          const referenceNote = isBaseBottom && spacingFeet > 0 && bentEndCount > 0
+            ? `, length reference ${row.baseLengthReference || "Outer H bar"}; ${bentEndCount} bent end${bentEndCount === 1 ? "" : "s"} x ${formatFeet(spacingFeet)} spacing x ${formatBarIndexDelta(referenceBarIndex - barIndex)}`
             : "";
           schedule.push(...buildManualContinuousRun({
             markBase: `${segment}_D${duplicateIndex + 1}_CONT_${barIndex + 1}`,
             prefix: `${segment}_D${duplicateIndex + 1}_CONT_${barIndex + 1}`,
-            location: `${row.segment || segment} ${duplicateLabel} ${positionName} ${rebarSize} continuous bar${spacingFeet ? `, offset ${formatFeet(offsetFeet)} from outside` : ""}${clearanceNote}`,
+            location: `${row.segment || segment} ${duplicateLabel} ${positionName} ${rebarSize} continuous bar${spacingFeet ? `, offset ${formatFeet(offsetFeet)} from outside` : ""}${clearanceNote}${referenceNote}`,
             straightFeet,
             stockFeet,
             overlapFeet,

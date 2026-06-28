@@ -66,6 +66,7 @@ type RebarInfoRow = {
   count: string;
   number: string;
   spacingBetween: string;
+  baseLengthReference: string;
   spacing: string;
   side1Bent: "" | "Yes" | "No";
   side1TurnAngle: string;
@@ -464,6 +465,7 @@ function createRebarInfoRow(itemType: RebarInfoType = "Base/Bottom rebar", index
     count: itemType === "Vertical Rebar" ? "N/A" : "1",
     number: itemType === "Horiz continues longtidues" ? "1" : itemType === "Base/Bottom rebar" ? "N/A" : "",
     spacingBetween: itemType === "Horiz continues longtidues" ? "0" : "",
+    baseLengthReference: itemType === "Base/Bottom rebar" ? "Outer H bar" : "",
     spacing: "",
     side1Bent: "",
     side1TurnAngle: "",
@@ -549,6 +551,7 @@ export default function Home() {
   });
   const [foundationRebarConfig, setFoundationRebarConfig] = useState<FoundationRebarConfig>(defaultFoundationRebarConfig);
   const [rebarInfoRows, setRebarInfoRows] = useState<RebarInfoRow[]>(() => [createRebarInfoRow("Base/Bottom rebar", 1)]);
+  const [rowPreviewRotation, setRowPreviewRotation] = useState<Record<string, number>>({});
   const [manualComparisonFields, setManualComparisonFields] = useState<ExtractedField[]>(initialFields);
   const [manualComparisonRows, setManualComparisonRows] = useState<RebarInfoRow[]>([]);
   const [manualComparisonGlobals, setManualComparisonGlobals] = useState<RebarGlobalParams | null>(null);
@@ -698,6 +701,7 @@ export default function Home() {
         count: (row.count && row.count.trim()) ? row.count : ((row.itemType === "Vertical Rebar") ? "N/A" : "1"),
         number: row.number || ((row.itemType === "Horiz continues longtidues") ? "1" : (row.itemType === "Base/Bottom rebar" ? "N/A" : "")),
         spacingBetween: row.spacingBetween ?? "",
+        baseLengthReference: row.baseLengthReference || (row.itemType === "Base/Bottom rebar" ? "Outer H bar" : ""),
         spacing: row.spacing ?? "",
         side1Bent: row.side1Bent || "",
         side1TurnAngle: row.side1TurnAngle || "",
@@ -947,6 +951,7 @@ export default function Home() {
           length: "52'",
           number: "3",
           spacingBetween: `6"`,
+          baseLengthReference: "Outer H bar",
           side1Bent: "Yes",
           side1TurnAngle: "90",
           side1BentLength: `24"`,
@@ -963,6 +968,7 @@ export default function Home() {
           length: `13'4"`,
           number: "3",
           spacingBetween: `6"`,
+          baseLengthReference: "Outer H bar",
           side1Bent: "Yes",
           side1TurnAngle: "90",
           side1BentLength: `24"`,
@@ -2744,7 +2750,7 @@ export default function Home() {
     if (!trimmed) return true;
     if (/^n\/?a$/i.test(trimmed)) return true;
     if (!/\d/.test(trimmed)) return true;
-    return /('|"|\bft\b|\bfeet\b|\bfoot\b|\bin\b|\binch\b|\binches\b)/i.test(trimmed);
+    return /('|"|\bft\b|\bfeet\b|\bfoot\b|\bin\b|\binch\b|\binches\b|\bcm\b|\bcentimeter\b|\bcentimeters\b|\bm\b|\bmeter\b|\bmeters\b)/i.test(trimmed);
   }
 
   function validateLengthUnitsBeforeGenerate(rowsToCheck: RebarInfoRow[]) {
@@ -2773,7 +2779,7 @@ export default function Home() {
         const rawValue = String(row[field] || "");
         if (!valueHasLengthUnit(rawValue)) {
           errors.push(rowFieldErrorKey(row.id, field));
-          messages.push(`${rowLabel}: ${label} has "${rawValue}" but no unit. Use examples like 52', 24", or 2'-6".`);
+          messages.push(`${rowLabel}: ${label} has "${rawValue}" but no unit. Use examples like 52', 24", 2'-6", 30 cm, or 1.2 m.`);
         }
       });
 
@@ -2831,7 +2837,7 @@ export default function Home() {
       const visibleMessages = lengthUnitValidation.messages.slice(0, 20);
       const hiddenCount = Math.max(0, lengthUnitValidation.messages.length - visibleMessages.length);
       setScheduleGenerationStatus(`Fix these length/unit fields before generating: ${visibleMessages.join(" | ")}${hiddenCount ? ` | ...and ${hiddenCount} more.` : ""}`);
-      window.alert(`Cannot generate yet. These fields have missing or unclear units:\n\n${visibleMessages.map((message, index) => `${index + 1}. ${message}`).join("\n")}${hiddenCount ? `\n\n...and ${hiddenCount} more.` : ""}\n\nUse units like 52', 24", 2'-6", ft, or in.`);
+      window.alert(`Cannot generate yet. These fields have missing or unclear units:\n\n${visibleMessages.map((message, index) => `${index + 1}. ${message}`).join("\n")}${hiddenCount ? `\n\n...and ${hiddenCount} more.` : ""}\n\nUse units like 52', 24", 2'-6", ft, in, cm, or m.`);
       return;
     }
     setLengthUnitErrorFields([]);
@@ -3594,6 +3600,263 @@ export default function Home() {
             <div className={`rounded border p-2 ${isMisc ? "border-blue-300 bg-blue-50 text-blue-900" : "bg-white text-slate-600"}`}><strong>Misc:</strong> custom field pieces.</div>
           </div>
         )}
+      </div>
+    );
+  };
+
+
+  const RebarRowLivePreview = ({ row }: { row: RebarInfoRow }) => {
+    const rotation = rowPreviewRotation[row.id] ?? 0;
+    const setRotation = (next: number) => setRowPreviewRotation((current) => ({ ...current, [row.id]: next }));
+    const feetLabel = (value: number) => formatFeet(Math.max(0, value));
+    const yes = (value: string) => value === "Yes";
+    const countFrom = (value: string, fallback: number, max = 8) => {
+      const n = Number.parseInt(String(value || "").replace(/[^0-9]/g, ""), 10);
+      if (!Number.isFinite(n) || n <= 0) return fallback;
+      return Math.min(n, max);
+    };
+    const baseCount = countFrom(row.number, 3, 6);
+    const designLength = parseFeet(row.length) || 0;
+    const spacing = parseFeet(row.spacingBetween) || parseFeet(row.verticalSpacingAdjacent) || 0;
+    const startBent = yes(row.side1Bent);
+    const finishBent = yes(row.side2Bent);
+    const bentEnds = (startBent ? 1 : 0) + (finishBent ? 1 : 0);
+    const selectedLabel = row.baseLengthReference || "Outer H bar";
+    const selectedIndex = selectedLabel.includes("Inner") ? baseCount - 1 : selectedLabel.includes("Center") ? Math.floor((baseCount - 1) / 2) : 0;
+    const baseLengths = Array.from({ length: baseCount }, (_, i) => Math.max(0, designLength + (selectedIndex - i) * spacing * bentEnds));
+    const maxBaseLength = Math.max(...baseLengths, designLength, 1);
+    const minBaseLength = Math.min(...baseLengths, designLength || maxBaseLength);
+    const diffRange = Math.max(0.001, maxBaseLength - minBaseLength);
+    const visualInsetFor = (len: number, i: number) => {
+      const missing = maxBaseLength - len;
+      if (diffRange < 0.01) return i * 16;
+      // Exaggerated on purpose so a 6"/12" real-world difference is visible on screen.
+      return Math.min(300, Math.max(0, (missing / diffRange) * 300));
+    };
+    const bendPath = (x: number, y: number, angleText: string, fallbackDown = true) => {
+      const raw = Number.parseFloat(String(angleText || "").replace(/[^0-9.-]/g, ""));
+      const deg = Number.isFinite(raw) ? raw : (fallbackDown ? 90 : 0);
+      const rad = (deg * Math.PI) / 180;
+      const length = 42;
+      const dx = Math.cos(rad) * length;
+      const dy = Math.sin(rad) * length;
+      return `M${x} ${y} L${x + dx} ${y + dy}`;
+    };
+    const sideClr = row.clearanceSides || "—";
+    const startReturn = row.side1BentLength || "—";
+    const finishReturn = row.side2BentLength || "—";
+    const travCount = countFrom(row.traverseNumber, 6, 12);
+    const travSpacing = row.traverseSpacing || "—";
+    const baseColors = ["#1d4ed8", "#7e22ce", "#ea580c", "#0f766e", "#be123c", "#4338ca"];
+    const barName = (i: number) => i === 0 ? "Outer H bar" : i === baseCount - 1 ? "Inner H bar" : i === selectedIndex ? "Center H bar" : `H bar ${i + 1}`;
+    const previewTitle = row.itemType === "Base/Bottom rebar" ? "Base/Bottom Rebar" : row.itemType === "Horiz continues longtidues" ? "Horizontal Continuous" : row.itemType === "Vertical Rebar" ? "Vertical Rebar" : row.itemType === "Pier" ? "Pier Cage" : "Misc / Field Item";
+
+    const renderBase = () => {
+      const top = 82;
+      const barGap = baseCount > 1 ? Math.min(66, Math.max(38, 190 / (baseCount - 1))) : 0;
+      const concreteTop = 38;
+      const concreteBottom = top + (baseCount - 1) * barGap + 58;
+      const leftMax = 94;
+      const rightMax = 666;
+      const svgHeight = Math.max(360, concreteBottom + 126);
+      const hasAnyBent = bentEnds > 0;
+      const effectiveLengths = hasAnyBent ? baseLengths : Array.from({ length: baseCount }, () => designLength || 1);
+      const effectiveMax = Math.max(...effectiveLengths, 1);
+      const effectiveMin = Math.min(...effectiveLengths, effectiveMax);
+      const effectiveRange = Math.max(0.001, effectiveMax - effectiveMin);
+      const insetForLength = (len: number) => {
+        if (!hasAnyBent || effectiveRange < 0.01) return 0;
+        const missing = effectiveMax - len;
+        return Math.min(170, Math.max(0, (missing / effectiveRange) * 170));
+      };
+      const drawBent = (x: number, y: number, angleText: string, isStart: boolean, color: string) => {
+        const raw = Number.parseFloat(String(angleText || "").replace(/[^0-9.-]/g, ""));
+        const deg = Number.isFinite(raw) ? raw : 90;
+        const angle = isStart ? 180 - deg : deg;
+        const rad = (angle * Math.PI) / 180;
+        const shown = 42;
+        return <line x1={x} y1={y} x2={x + Math.cos(rad) * shown} y2={y + Math.sin(rad) * shown} stroke={color} strokeWidth="5" strokeLinecap="round" />;
+      };
+      // Traverse bars are cross bars inside the H-bar mat. Keep them bounded by the
+      // actual H-bar envelope, so they never extend outside the visible rebar range.
+      const widestInset = hasAnyBent ? Math.max(...effectiveLengths.map((len) => insetForLength(len))) : 0;
+      const travYTop = top;
+      const travYBottom = top + (baseCount - 1) * barGap;
+      const travStart = leftMax + widestInset;
+      const travEnd = rightMax - widestInset;
+      const travLabelY = Math.min(concreteBottom + 26, travYBottom + 28);
+      const travSlots = Array.from({ length: travCount }, (_, i) => travCount === 1 ? (travStart + travEnd) / 2 : travStart + i * ((travEnd - travStart) / Math.max(1, travCount - 1)));
+      return (
+        <svg viewBox={`0 0 760 ${svgHeight}`} className="h-[390px] w-full max-w-[980px]" role="img" aria-label="Live base bottom rebar preview">
+          <defs>
+            <marker id={`arrow-${row.id}`} markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#dc2626" /></marker>
+            <marker id={`arrow-blue-${row.id}`} markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#2563eb" /></marker>
+          </defs>
+          <rect x="54" y={concreteTop} width="660" height={concreteBottom - concreteTop} fill="#f8fafc" stroke="#111827" strokeWidth="2" />
+          <text x="380" y="24" textAnchor="middle" fontSize="18" fontWeight="900" fill="#0f172a">LIVE PREVIEW — Base/Bottom Rebar</text>
+          <text x="710" y="24" textAnchor="end" fontSize="12" fontWeight="800" fill="#334155">( Not to scale )</text>
+          {[86, 116, 652, 682].map((x) => <line key={`clr-${x}`} x1={x} y1={concreteTop - 8} x2={x} y2={concreteBottom + 14} stroke="#16a34a" strokeDasharray="8 7" />)}
+          <text x="78" y={concreteTop - 20} fontSize="13" fontWeight="900" fill="#111827">{sideClr}</text>
+          <text x="700" y={concreteTop - 20} fontSize="13" fontWeight="900" fill="#111827">{sideClr}</text>
+          {baseCount > 1 && Array.from({ length: baseCount - 1 }, (_, i) => {
+            const y1 = top + i * barGap;
+            const y2 = top + (i + 1) * barGap;
+            return <g key={`spacing-${i}`}><line x1="610" y1={y1} x2="610" y2={y2} stroke="#15803d" strokeWidth="2" markerEnd={`url(#arrow-${row.id})`} /><text x="620" y={(y1 + y2) / 2 + 4} fontSize="13" fontWeight="900" fill="#15803d">{row.spacingBetween || "—"}</text></g>;
+          })}
+          {travSlots.map((x, i) => (
+            <g key={`trav-${i}`}>
+              <line x1={x} y1={travYTop} x2={x} y2={travYBottom} stroke="#7e22ce" strokeWidth="4" strokeLinecap="round" />
+              {i > 0 && <><line x1={travSlots[i - 1]} y1={travLabelY} x2={x} y2={travLabelY} stroke="#7e22ce" strokeWidth="1.5" /><text x={(travSlots[i - 1] + x) / 2} y={travLabelY + 15} textAnchor="middle" fontSize="12" fontWeight="900" fill="#7e22ce">{travSpacing}</text></>}
+            </g>
+          ))}
+          {baseLengths.map((len, i) => {
+            const y = top + i * barGap;
+            const inset = insetForLength(effectiveLengths[i]);
+            const x1 = leftMax + inset;
+            const x2 = rightMax - inset;
+            const color = baseColors[i % baseColors.length];
+            const name = barName(i);
+            const isDesign = i === selectedIndex;
+            return (
+              <g key={`basebar-${i}`}>
+                <line x1={x1} y1={y} x2={x2} y2={y} stroke={color} strokeWidth={isDesign ? 8 : 6} strokeLinecap="round" />
+                <circle cx={x1} cy={y} r="4" fill="#111827" />
+                <circle cx={x2} cy={y} r="4" fill="#111827" />
+                {startBent && drawBent(x1, y, row.side1TurnAngle || "90", true, "#dc2626")}
+                {finishBent && drawBent(x2, y, row.side2TurnAngle || "90", false, "#dc2626")}
+                <text x={(x1 + x2) / 2} y={y - 12} textAnchor="middle" fontSize={isDesign ? 16 : 13} fontWeight="900" fill={isDesign ? "#be185d" : color}>{feetLabel(effectiveLengths[i])}</text>
+                <text x={(x1 + x2) / 2} y={y + 21} textAnchor="middle" fontSize="11" fontWeight="900" fill="#0f172a">{isDesign ? "DESIGN LENGTH — " : ""}{name.toUpperCase()} LENGTH</text>
+                <text x="724" y={y - 4} fontSize="12" fontWeight="900" fill={color}>{name.toUpperCase()}</text>
+                <text x="724" y={y + 15} fontSize="12" fontWeight="900" fill="#111827">{feetLabel(effectiveLengths[i])}{isDesign ? " (Design)" : ""}</text>
+                {startBent && <><text x={Math.max(42, x1 - 48)} y={y + 26} fontSize="12" fontWeight="900" fill="#dc2626">{startReturn}</text></>}
+                {finishBent && <><text x={Math.min(694, x2 + 14)} y={y + 26} fontSize="12" fontWeight="900" fill="#dc2626">{finishReturn}</text></>}
+              </g>
+            );
+          })}
+          <text x="380" y={concreteBottom + 38} textAnchor="middle" fontSize="13" fontWeight="900" fill="#7e22ce">Traverse bars: {row.traverseNumber || "N/A"} @ {travSpacing}, piece length {row.traverseLength || "—"}</text>
+          <rect x="60" y={concreteBottom + 58} width="300" height="54" rx="6" fill="#fff" stroke="#f59e0b" />
+          <text x="72" y={concreteBottom + 78} fontSize="12" fontWeight="900" fill="#111827">Length difference formula</text>
+          <text x="72" y={concreteBottom + 98} fontSize="11" fontWeight="700" fill="#334155">{hasAnyBent ? `Each step = spacing × bent ends = ${row.spacingBetween || "—"} × ${bentEnds}.` : "No bent ends: all H bars show the Design Length."}</text>
+          <rect x="382" y={concreteBottom + 58} width="302" height="54" rx="6" fill="#fff" stroke="#93c5fd" />
+          <text x="396" y={concreteBottom + 78} fontSize="12" fontWeight="900" fill="#be185d">Design length is on: {barName(selectedIndex)}</text>
+          <text x="396" y={concreteBottom + 98} fontSize="11" fontWeight="700" fill="#334155">Changing length or Length Is updates this preview.</text>
+        </svg>
+      );
+    };
+
+    const renderHorizontal = () => (
+      <svg viewBox="0 0 760 300" className="h-[250px] w-full" role="img" aria-label="Live horizontal rebar preview">
+        <rect x="70" y="72" width="620" height="126" fill="#f8fafc" stroke="#111827" strokeWidth="2" />
+        <text x="380" y="30" textAnchor="middle" fontSize="18" fontWeight="900">LIVE PREVIEW — Horizontal Continuous</text>
+        {Array.from({ length: countFrom(row.number, 3, 6) }, (_, i) => {
+          const y = 105 + i * 32;
+          return <g key={`h-${i}`}><line x1="115" y1={y} x2="645" y2={y} stroke="#2563eb" strokeWidth="7" strokeLinecap="round" />{yes(row.side1Bent) && <path d={`M115 ${y} v38`} stroke="#dc2626" strokeWidth="6" strokeLinecap="round" />}{yes(row.side2Bent) && <path d={`M645 ${y} v38`} stroke="#dc2626" strokeWidth="6" strokeLinecap="round" />}<text x="380" y={y - 9} textAnchor="middle" fontSize="15" fontWeight="900" fill="#2563eb">{row.length || "Length"}</text></g>;
+        })}
+        <text x="90" y="235" fontSize="13" fontWeight="800">Count: {row.number || "—"} · Spacing: {row.spacingBetween || "—"} · Start angle: {row.side1TurnAngle || "—"}° · Finish angle: {row.side2TurnAngle || "—"}°</text>
+      </svg>
+    );
+
+    const renderVertical = () => {
+      const run = parseFeet(row.calcLength) || 52;
+      const sp = parseFeet(row.spacing || row.verticalSpacingAdjacent) || 1.5;
+      const autoCount = Math.max(2, Math.min(12, Math.floor(run / sp) + 1));
+      const barCount = countFrom(row.count, autoCount, 12);
+      const bottomBent = yes(row.side1Bent);
+      const topBent = yes(row.side2Bent);
+      const anglePathFrom = (x: number, y: number, angleText: string, len = 34) => {
+        const raw = Number.parseFloat(String(angleText || "").replace(/[^0-9.-]/g, ""));
+        const deg = Number.isFinite(raw) ? raw : 90;
+        const rad = (deg * Math.PI) / 180;
+        return `M${x} ${y} L${x + Math.cos(rad) * len} ${y + Math.sin(rad) * len}`;
+      };
+      return (
+        <svg viewBox="0 0 760 300" className="h-[315px] w-full" role="img" aria-label="Live vertical rebar preview">
+          <rect x="78" y="215" width="610" height="18" fill="#e2e8f0" stroke="#334155" />
+          <text x="380" y="30" textAnchor="middle" fontSize="18" fontWeight="900">LIVE PREVIEW — Vertical Rebar</text>
+          <text x="380" y="52" textAnchor="middle" fontSize="13" fontWeight="900" fill="#2563eb">{barCount} vertical bars @ {row.spacing || row.verticalSpacingAdjacent || "—"} O.C.</text>
+          <line x1="700" y1="72" x2="700" y2="215" stroke="#7e22ce" strokeWidth="2" markerEnd={`url(#arrow-${row.id})`} />
+          <text x="708" y="148" fontSize="12" fontWeight="900" fill="#7e22ce">{row.length || "—"}</text>
+          {Array.from({ length: barCount }, (_, i) => {
+            const x = 118 + i * (520 / Math.max(1, barCount - 1));
+            return (
+              <g key={`v-${i}`}>
+                <line x1={x} y1="72" x2={x} y2="215" stroke="#2563eb" strokeWidth="6" strokeLinecap="round" />
+                {topBent && <path d={anglePathFrom(x, 72, row.side2TurnAngle || "-90")} fill="none" stroke="#dc2626" strokeWidth="5" strokeLinecap="round" />}
+                {bottomBent && <path d={anglePathFrom(x, 215, row.side1TurnAngle || "0")} fill="none" stroke="#dc2626" strokeWidth="5" strokeLinecap="round" />}
+              </g>
+            );
+          })}
+          <line x1="118" y1="252" x2="638" y2="252" stroke="#7e22ce" strokeWidth="2" />
+          <text x="380" y="268" textAnchor="middle" fontSize="13" fontWeight="900" fill="#7e22ce">Calculate run: {row.calcLength || "—"} · Spacing: {row.spacing || row.verticalSpacingAdjacent || "—"} · Straight length: {row.length || "—"} · Bottom bend: {row.side1Bent || "No"} · Top bend: {row.side2Bent || "No"}</text>
+        </svg>
+      );
+    };
+
+    const renderPier = () => {
+      const hoopCount = countFrom(row.horizontalCircleCount, 4, 12);
+      const vCount = countFrom(row.numVerticalBars, 6, 16);
+      const diameterFeet = parseFeet(row.diameter) || 2.5;
+      const heightFeet = parseFeet(row.length) || 2.5;
+      const cx = 380;
+      const rx = Math.max(90, Math.min(220, diameterFeet * 64));
+      const ry = Math.max(24, Math.min(56, rx * 0.26));
+      const cageHeight = Math.max(110, Math.min(245, heightFeet * 70));
+      const topY = 58;
+      const bottomY = topY + cageHeight;
+      const hoopYs = Array.from({ length: hoopCount }, (_, i) => hoopCount === 1 ? (topY + bottomY) / 2 : topY + i * ((bottomY - topY) / Math.max(1, hoopCount - 1)));
+      const frontBars = Array.from({ length: vCount }, (_, i) => {
+        const t = vCount === 1 ? 0.5 : i / Math.max(1, vCount - 1);
+        return cx - rx * 0.68 + t * (rx * 1.36);
+      });
+      return (
+        <svg viewBox="0 0 760 400" className="h-[390px] w-full" role="img" aria-label="Live pier cage preview">
+          <text x="380" y="28" textAnchor="middle" fontSize="18" fontWeight="900">LIVE PREVIEW — Pier Cage</text>
+          <line x1={cx - rx} y1={topY} x2={cx - rx} y2={bottomY} stroke="#2563eb" strokeWidth="4" />
+          <line x1={cx + rx} y1={topY} x2={cx + rx} y2={bottomY} stroke="#2563eb" strokeWidth="4" />
+          <line x1={cx + rx + 34} y1={topY} x2={cx + rx + 34} y2={bottomY} stroke="#dc2626" strokeWidth="2" markerEnd={`url(#arrow-${row.id})`} />
+          <text x={cx + rx + 44} y={(topY + bottomY) / 2} fontSize="13" fontWeight="900" fill="#dc2626">{row.length || "—"} height</text>
+          <line x1={cx - rx} y1={bottomY + ry + 24} x2={cx + rx} y2={bottomY + ry + 24} stroke="#7e22ce" strokeWidth="2" markerEnd={`url(#arrow-${row.id})`} />
+          <text x={cx} y={bottomY + ry + 44} textAnchor="middle" fontSize="13" fontWeight="900" fill="#7e22ce">{row.diameter || "—"} diameter</text>
+          {hoopYs.map((y, i) => (
+            <ellipse key={`hoop-${i}`} cx={cx} cy={y} rx={rx} ry={ry} fill={i === hoopYs.length - 1 ? "#eff6ff" : "none"} stroke="#2563eb" strokeWidth="4" opacity={i === hoopYs.length - 1 ? 1 : 0.85} />
+          ))}
+          {frontBars.map((x, i) => (
+            <line key={`pier-v-${i}`} x1={x} y1={topY + 2} x2={x} y2={bottomY - 2} stroke="#1d4ed8" strokeWidth="5" strokeLinecap="round" />
+          ))}
+          <text x="380" y="348" textAnchor="middle" fontSize="14" fontWeight="900">Diameter: {row.diameter || "—"} · Cage height: {row.length || "—"} · Hoops drawn: {hoopCount} · Vertical bars drawn: {vCount}</text>
+          <text x="380" y="372" textAnchor="middle" fontSize="12" fontWeight="800" fill="#475569">Preview scales width from diameter and height from cage height.</text>
+        </svg>
+      );
+    };
+
+    const renderMisc = () => (
+      <svg viewBox="0 0 760 220" className="h-[160px] w-full" role="img" aria-label="Misc preview">
+        <rect x="80" y="70" width="600" height="70" rx="10" fill="#f8fafc" stroke="#64748b" strokeWidth="3" strokeDasharray="10 8" />
+        <text x="380" y="30" textAnchor="middle" fontSize="18" fontWeight="900">LIVE PREVIEW — Misc / Field Item</text>
+        <text x="380" y="112" textAnchor="middle" fontSize="15" fontWeight="900" fill="#475569">Use notes for unusual field pieces.</text>
+      </svg>
+    );
+
+    const body = row.itemType === "Base/Bottom rebar" ? renderBase() : row.itemType === "Horiz continues longtidues" ? renderHorizontal() : row.itemType === "Vertical Rebar" ? renderVertical() : row.itemType === "Pier" ? renderPier() : renderMisc();
+    return (
+      <div className="mt-2 rounded-xl border border-blue-200 bg-white/95 p-2 shadow-sm">
+        <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-xs">
+          <div className="font-black text-slate-900">{previewTitle} live preview <span className="font-semibold text-slate-500">— {row.segment || "unnamed row"}</span></div>
+          <div className="flex items-center gap-1"><span className="mr-1 font-bold text-slate-700">Rotate View</span>{[0, 90, 180, 270].map((deg) => <button key={deg} type="button" onClick={() => setRotation(deg)} className={`rounded border px-2 py-1 font-bold ${rotation === deg ? "border-blue-700 bg-blue-700 text-white" : "border-slate-300 bg-white text-slate-700"}`}>{deg}°</button>)}</div>
+        </div>
+        <div className="overflow-auto rounded-lg bg-white">
+          <div
+            className="origin-center transition-transform"
+            style={{
+              transform: `rotate(${rotation}deg) scale(${rotation % 180 === 0 ? 1 : 0.42})`,
+              transformOrigin: "center center",
+              minHeight: rotation % 180 === 0 ? undefined : "260px",
+              maxHeight: rotation % 180 === 0 ? undefined : "360px",
+            }}
+          >
+            {body}
+          </div>
+        </div>
       </div>
     );
   };
@@ -5431,12 +5694,15 @@ export default function Home() {
                   const isNewEmptyRow = newEmptyRowIds.includes(row.id);
                   const miniInputClass = "rp-mini-input";
                   const miniSelectClass = "rp-mini-select";
+                  const lengthLikeFields = new Set<keyof RebarInfoRow>(["length", "calcLength", "side1BentLength", "side2BentLength", "verticalBentLength", "traverseLength", "spacingBetween", "traverseSpacing", "spacing", "diameter", "clearanceTop", "clearanceBottom", "clearanceSides"]);
                   const rowField = ({ label, value, field, placeholder = "", className = "w-24", info }: { label: ReactNode; value: string; field: keyof RebarInfoRow; placeholder?: string; className?: string; info?: string }) => {
-                    const hasUnitError = lengthUnitErrorFields.includes(rowFieldErrorKey(row.id, field));
+                    const savedUnitError = lengthUnitErrorFields.includes(rowFieldErrorKey(row.id, field));
+                    const liveUnitError = lengthLikeFields.has(field) && !valueHasLengthUnit(String(value || ""));
+                    const hasUnitError = savedUnitError || liveUnitError;
                     return (
-                      <label className={`rp-mini-field ${className}`} title={hasUnitError ? `${String(label)}: add a unit like ', ", ft, or in.` : (info || String(label))}>
+                      <label className={`rp-mini-field ${className}`} title={hasUnitError ? `${String(label)}: add a unit like ', ", ft, in, cm, or m.` : (info || String(label))}>
                         <span>{label}{info ? <InfoTip text={info} /> : null}</span>
-                        <input value={value} onChange={(e) => updateRebarInfoRow(row.id, field, e.target.value)} placeholder={placeholder} className={`${miniInputClass} ${hasUnitError ? "border-2 border-red-600 bg-red-50" : ""}`} />
+                        <input value={value} onChange={(e) => updateRebarInfoRow(row.id, field, e.target.value)} placeholder={placeholder} className={`${miniInputClass} ${hasUnitError ? "border-2 border-red-600 bg-red-50 ring-2 ring-red-200" : ""}`} />
                       </label>
                     );
                   };
@@ -5466,8 +5732,9 @@ export default function Home() {
                         <>
                           <span className="rp-line-break" /><span className="rp-row-tag">Continuous longitudinals</span>
                           {rowField({ label: "Bar Count", info: "Number of continuous parallel bars or nested loops in this group. Use N/A when not used.", value: row.number, field: "number", placeholder: "N/A", className: "w-28" })}
-                          {rowField({ label: "Design Length", info: "Overall design/run length before the app applies clearance, spacing, laps, bends, and stock splitting.", value: row.length, field: "length", placeholder: "52'", className: "w-28" })}
-                          {rowField({ label: "Bar Spacing", info: "Center-to-center spacing between adjacent bars.", value: row.spacingBetween, field: "spacingBetween", placeholder: '6"', className: "w-28" })}
+                          {rowField({ label: "Design Length", info: "Length of the H bar selected in the next field. The app calculates the other H-bar lengths from bar count and spacing.", value: row.length, field: "length", placeholder: "52'", className: "w-28" })}
+                          {rowSelect({ label: "Length Is", info: "Tell the app which H bar the Design Length belongs to. Outer is longest at corners, inner is shortest, center is middle.", value: row.baseLengthReference || "Outer H bar", field: "baseLengthReference", options: ["Outer H bar", "Center H bar", "Inner H bar"], className: "w-32" })}
+                          {rowField({ label: "Bar Spacing", info: "Center-to-center spacing between adjacent H bars. Used to add/subtract length at bent corners.", value: row.spacingBetween, field: "spacingBetween", placeholder: '6"', className: "w-28" })}
                           <span className="rp-line-break" /><span className="rp-row-tag">Start end</span>
                           {rowSelect({ label: "Bent?", info: "Yes if this end has a bend, hook, return, or lap leg.", value: row.side1Bent, field: "side1Bent", options: ["", "Yes", "No"], className: "w-20" })}
                           {rowField({ label: "Turn Angle", info: "Bend angle in degrees, for example 90.", value: row.side1TurnAngle, field: "side1TurnAngle", placeholder: "90", className: "w-28" })}
@@ -5510,15 +5777,15 @@ export default function Home() {
                           {rowField({ label: "Bar Spacing", info: "Center-to-center spacing between adjacent bars.", value: row.spacing, field: "spacing", placeholder: '18"', className: "w-28" })}
                           {rowField({ label: "Bar Count", info: "Manual quantity, or N/A to calculate from run length and spacing.", value: row.count, field: "count", placeholder: "N/A", className: "w-28" })}
                           {rowField({ label: "Straight Length", info: "Straight vertical portion before bent overlap/return.", value: row.length, field: "length", placeholder: '24"', className: "w-32" })}
-                          {rowField({ label: "Calculate Run", info: "Run length used to calculate quantity when Bar Count is N/A.", value: row.calcLength, field: "calcLength", placeholder: "52'", className: "w-28" })}
-                          <span className="rp-line-break" /><span className="rp-row-tag">Start end</span>
-                          {rowSelect({ label: "Bent?", info: "Yes if this end has a bend, hook, return, or lap leg.", value: row.side1Bent, field: "side1Bent", options: ["", "Yes", "No"], className: "w-20" })}
-                          {rowField({ label: "Turn Angle", info: "Bend angle in degrees, for example 90.", value: row.side1TurnAngle, field: "side1TurnAngle", placeholder: "90", className: "w-28" })}
-                          {rowField({ label: "Bent Return Length", info: "Length of bent return, hook, lap, or overlap. Include units, for example 24&quot;.", value: row.side1BentLength, field: "side1BentLength", placeholder: '6"', className: "w-28" })}
-                          <span className="rp-line-break" /><span className="rp-row-tag">Finish end</span>
-                          {rowSelect({ label: "Bent?", info: "Yes if this end has a bend, hook, return, or lap leg.", value: row.side2Bent, field: "side2Bent", options: ["", "Yes", "No"], className: "w-20" })}
-                          {rowField({ label: "Turn Angle", info: "Bend angle in degrees, for example 90.", value: row.side2TurnAngle, field: "side2TurnAngle", placeholder: "90", className: "w-28" })}
-                          {rowField({ label: "Bent Return Length", info: "Length of bent return, hook, lap, or overlap. Include units, for example 24&quot;.", value: row.side2BentLength, field: "side2BentLength", placeholder: '6"', className: "w-28" })}
+                          {rowField({ label: "Calculate Run", info: "Total wall/run length. Used to auto-calculate how many vertical bars are needed when Bar Count is N/A; otherwise it is just a reference dimension in the preview.", value: row.calcLength, field: "calcLength", placeholder: "52'", className: "w-28" })}
+                          <span className="rp-line-break" /><span className="rp-row-tag">Bottom end</span>
+                          {rowSelect({ label: "Bottom Bent?", info: "Yes if the bottom end has a bend, hook, return, or lap leg.", value: row.side1Bent, field: "side1Bent", options: ["", "Yes", "No"], className: "w-20" })}
+                          {rowField({ label: "Bottom Angle", info: "Bottom bend angle in degrees.", value: row.side1TurnAngle, field: "side1TurnAngle", placeholder: "90", className: "w-28" })}
+                          {rowField({ label: "Bottom Return", info: "Length of bottom bent return, hook, lap, or overlap.", value: row.side1BentLength, field: "side1BentLength", placeholder: '6"', className: "w-28" })}
+                          <span className="rp-line-break" /><span className="rp-row-tag">Top end</span>
+                          {rowSelect({ label: "Top Bent?", info: "Yes if the top end has a bend, hook, return, or lap leg.", value: row.side2Bent, field: "side2Bent", options: ["", "Yes", "No"], className: "w-20" })}
+                          {rowField({ label: "Top Angle", info: "Top bend angle in degrees.", value: row.side2TurnAngle, field: "side2TurnAngle", placeholder: "90", className: "w-28" })}
+                          {rowField({ label: "Top Return", info: "Length of top bent return, hook, lap, or overlap.", value: row.side2BentLength, field: "side2BentLength", placeholder: '6"', className: "w-28" })}
                         </>
                       )}
 
@@ -5541,6 +5808,8 @@ export default function Home() {
 
                       {row.itemType === "Misc" && <span className="text-[11px] text-slate-600">Misc row for unusual notes or field pieces.</span>}
                     </div>
+
+                    <RebarRowLivePreview row={row} />
 
                     {plannerView === "advanced" && cropRefs.length > 0 && (
                       <div className="mt-1 flex items-center gap-2 text-[11px]" data-crop-dropdown>
