@@ -11,9 +11,10 @@
 
     <application
         android:allowBackup="true"
-        android:icon="@mipmap/ic_launcher"
+        android:banner="@drawable/tv_banner_320x180"
+        android:icon="@drawable/tv_icon_512x512"
         android:label="@string/app_name"
-        android:roundIcon="@mipmap/ic_launcher_round"
+        android:roundIcon="@drawable/tv_icon_512x512"
         android:supportsRtl="true"
         android:theme="@style/AppTheme">
 
@@ -23,7 +24,9 @@
             android:label="@string/title_activity_main"
             android:theme="@style/AppTheme.NoActionBarLaunch"
             android:launchMode="singleTask"
-            android:exported="true">
+            android:exported="true"
+            android:banner="@drawable/tv_banner_320x180"
+            android:icon="@drawable/tv_icon_512x512">
 
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
