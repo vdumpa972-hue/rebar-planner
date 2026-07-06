@@ -93,6 +93,12 @@ type RebarGlobalParams = {
   defaultVerticalToBase: string;
   foundationRebarSize: string;
   pierRebarSize: string;
+  pricePerStick3: string;
+  pricePerStick4: string;
+  pricePerStick5: string;
+  pricePerStick6: string;
+  cutCostEach: string;
+  bendCostEach: string;
 };
 
 type FoundationRebarConfig = {
@@ -438,6 +444,28 @@ function getFieldSourceStyle(source: FieldSource) {
 
 
 const rebarInfoTypes: RebarInfoType[] = ["Base/Bottom rebar", "Horiz continues longtidues", "Vertical Rebar", "Pier", "Misc"];
+const rebarInfoTypeSortOrder: Record<RebarInfoType, number> = {
+  "Base/Bottom rebar": 1,
+  "Horiz continues longtidues": 2,
+  "Vertical Rebar": 3,
+  "Pier": 4,
+  "Misc": 5,
+};
+
+function normalizeYesNo(value: unknown): "" | "Yes" | "No" {
+  return value === "Yes" || value === "No" ? value : "";
+}
+
+function sortRebarInfoRowsByType(rows: RebarInfoRow[]) {
+  return rows
+    .map((row, originalIndex) => ({ row, originalIndex }))
+    .sort((a, b) => {
+      const aOrder = rebarInfoTypeSortOrder[a.row.itemType] ?? 999;
+      const bOrder = rebarInfoTypeSortOrder[b.row.itemType] ?? 999;
+      return aOrder - bOrder || a.originalIndex - b.originalIndex;
+    })
+    .map(({ row }) => row);
+}
 
 function rebarSegmentPrefix(itemType: RebarInfoType) {
   if (itemType === "Base/Bottom rebar") return "BaseBottom";
@@ -548,6 +576,12 @@ export default function Home() {
     defaultVerticalToBase: '6"',
     foundationRebarSize: "#4",
     pierRebarSize: "#4",
+    pricePerStick3: "",
+    pricePerStick4: "",
+    pricePerStick5: "",
+    pricePerStick6: "",
+    cutCostEach: "",
+    bendCostEach: "",
   });
   const [foundationRebarConfig, setFoundationRebarConfig] = useState<FoundationRebarConfig>(defaultFoundationRebarConfig);
   const [rebarInfoRows, setRebarInfoRows] = useState<RebarInfoRow[]>(() => [createRebarInfoRow("Base/Bottom rebar", 1)]);
@@ -647,7 +681,7 @@ export default function Home() {
       pierMode,
       rebarGlobalParams,
       foundationRebarConfig,
-      rebarInfoRows,
+      rebarInfoRows: sortRebarInfoRowsByType(rebarInfoRows),
       cropRefs,
       projectStatus,
       projectNotes,
@@ -693,30 +727,35 @@ export default function Home() {
       setFoundationRebarConfig((current) => ({ ...current, ...data.foundationRebarConfig }));
     }
     if (Array.isArray(data.rebarInfoRows) && data.rebarInfoRows.length) {
-      setRebarInfoRows(data.rebarInfoRows.map((row, index) => ({
-        ...createRebarInfoRow((rebarInfoTypes.includes(row.itemType as RebarInfoType) ? row.itemType as RebarInfoType : "Base/Bottom rebar"), index + 1),
-        ...row,
-        itemType: rebarInfoTypes.includes(row.itemType as RebarInfoType) ? row.itemType as RebarInfoType : "Base/Bottom rebar",
-        cropImages: Array.isArray(row.cropImages) ? row.cropImages : (row.cropImage ? [row.cropImage] : []),
-        count: (row.count && row.count.trim()) ? row.count : ((row.itemType === "Vertical Rebar") ? "N/A" : "1"),
-        number: row.number || ((row.itemType === "Horiz continues longtidues") ? "1" : (row.itemType === "Base/Bottom rebar" ? "N/A" : "")),
-        spacingBetween: row.spacingBetween ?? "",
-        baseLengthReference: row.baseLengthReference || (row.itemType === "Base/Bottom rebar" ? "Outer H bar" : ""),
-        spacing: row.spacing ?? "",
-        side1Bent: row.side1Bent || "",
-        side1TurnAngle: row.side1TurnAngle || "",
-        side1BentLength: row.side1BentLength || "",
-        side2Bent: row.side2Bent || "",
-        side2TurnAngle: row.side2TurnAngle || "",
-        side2BentLength: row.side2BentLength || "",
-        traverseNumber: row.traverseNumber || "",
-        traverseSpacing: row.traverseSpacing || "",
-        traverseLength: row.traverseLength || "",
-        clearanceTop: row.clearanceTop || `3"`,
-        clearanceBottom: row.clearanceBottom || `3"`,
-        clearanceSides: row.clearanceSides || `3"`,
-        verticalSpacingAdjacent: row.verticalSpacingAdjacent || "",
-      })));
+      const normalizedRows = data.rebarInfoRows.map((row, index) => {
+        const itemType = rebarInfoTypes.includes(row.itemType as RebarInfoType) ? row.itemType as RebarInfoType : "Base/Bottom rebar";
+        return {
+          ...createRebarInfoRow(itemType, index + 1),
+          ...row,
+          itemType,
+          cropImages: Array.isArray(row.cropImages) ? row.cropImages : (row.cropImage ? [row.cropImage] : []),
+          count: (row.count && row.count.trim()) ? row.count : (itemType === "Vertical Rebar" ? "N/A" : "1"),
+          number: row.number || (itemType === "Horiz continues longtidues" ? "1" : (itemType === "Base/Bottom rebar" ? "N/A" : "")),
+          spacingBetween: row.spacingBetween ?? "",
+          baseLengthReference: row.baseLengthReference || (itemType === "Base/Bottom rebar" ? "Outer H bar" : ""),
+          spacing: row.spacing ?? "",
+          side1Bent: normalizeYesNo(row.side1Bent),
+          side1TurnAngle: row.side1TurnAngle || "",
+          side1BentLength: row.side1BentLength || "",
+          side2Bent: normalizeYesNo(row.side2Bent),
+          side2TurnAngle: row.side2TurnAngle || "",
+          side2BentLength: row.side2BentLength || "",
+          traverseNumber: row.traverseNumber || "",
+          traverseSpacing: row.traverseSpacing || "",
+          traverseLength: row.traverseLength || "",
+          clearanceTop: row.clearanceTop || `3"`,
+          clearanceBottom: row.clearanceBottom || `3"`,
+          clearanceSides: row.clearanceSides || `3"`,
+          verticalSpacingAdjacent: row.verticalSpacingAdjacent || "",
+          verticalBent: normalizeYesNo(row.verticalBent),
+        };
+      });
+      setRebarInfoRows(sortRebarInfoRowsByType(normalizedRows));
     }
     if (data.savedGeneratedSchedule && Array.isArray(data.savedGeneratedSchedule.schedule)) {
       setSchedule(data.savedGeneratedSchedule.schedule);
@@ -870,7 +909,7 @@ export default function Home() {
       }, { merge: true });
 
       setCurrentProjectId(projectId);
-      setWorkspaceStatus("Project saved. PDF/crops are in Storage; metadata is in Firestore.");
+      setWorkspaceStatus("Project saved with PDF/crops, manual config, global prices, rebar rows, and generated schedule.");
       await loadSavedProjects(user.uid);
     } catch (error) {
       setWorkspaceStatus(error instanceof Error ? `Save failed: ${error.message}` : "Save failed.");
@@ -1070,14 +1109,26 @@ export default function Home() {
   }
 
   function downloadProjectBackupJson() {
+    const snapshot = getWorkspaceSnapshot();
     const payload = {
+      ...snapshot,
       app: "rebar-planner",
-      backupVersion: 1,
+      backupVersion: 2,
       exportedAtIso: new Date().toISOString(),
-      projectName,
-      projectStatus,
-      projectNotes,
-      projectFavorite,
+      // Keep a clearly named manualConfig block for old/new backups.
+      // Save Project already stores these same values inside the project snapshot.
+      manualConfig: {
+        extractionMode,
+        horizontalLap,
+        verticalBentLap,
+        stickLength,
+        fields,
+        fieldSources,
+        pierMode,
+        rebarGlobalParams,
+        foundationRebarConfig,
+        rebarInfoRows: sortRebarInfoRowsByType(rebarInfoRows),
+      },
       plan: {
         fileName: planFileName,
         fileType: planFileType,
@@ -1085,17 +1136,7 @@ export default function Home() {
         storagePath: planStoragePath,
         downloadUrl: planDownloadUrl,
       },
-      rebarGlobalParams,
-      rebarInfoRows,
       cropRefs: cropRefs.map((crop) => ({ ...crop, imageDataUrl: crop.imageDataUrl?.startsWith("data:") ? "[embedded image omitted from JSON backup]" : crop.imageDataUrl })),
-      savedGeneratedSchedule: schedule.length ? {
-        generatedAtIso: savedScheduleAt || new Date().toISOString(),
-        schedule,
-        summary,
-        materialTakeoff,
-        reviewedPieceMarks,
-        validationWarnings: engineValidationWarnings,
-      } : null,
     };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json;charset=utf-8" });
     const url = URL.createObjectURL(blob);
@@ -1452,6 +1493,103 @@ export default function Home() {
     const match = text.match(/#\s*(\d{1,2})/);
     return match ? `#${match[1]}` : "UNSPEC";
   }
+
+  function parseMoneyInput(value: string): number {
+    const parsed = Number(String(value || "").replace(/[^0-9.\-]/g, ""));
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  function moneyLabel(value: number): string {
+    return `$${value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  }
+
+  function lineBendCount(line: ScheduleLine): number {
+    const left = String(line.leftFunction || "").toLowerCase();
+    const right = String(line.rightFunction || "").toLowerCase();
+    let count = 0;
+    if (left.includes("bend") || left.includes("bent")) count += 1;
+    if (right.includes("bend") || right.includes("bent")) count += 1;
+    return count;
+  }
+
+  function getStickPriceForSize(size: string): number {
+    if (size === "#3") return parseMoneyInput(rebarGlobalParams.pricePerStick3);
+    if (size === "#4") return parseMoneyInput(rebarGlobalParams.pricePerStick4);
+    if (size === "#5") return parseMoneyInput(rebarGlobalParams.pricePerStick5);
+    if (size === "#6") return parseMoneyInput(rebarGlobalParams.pricePerStick6);
+    return 0;
+  }
+
+  const materialByRebarSize = useMemo(() => {
+    const stockFeet = parseFeet(materialTakeoff?.stockLength || rebarGlobalParams.stickLength || stickLength || "20'") || 20;
+    const cutCost = parseMoneyInput(rebarGlobalParams.cutCostEach);
+    const bendCost = parseMoneyInput(rebarGlobalParams.bendCostEach);
+    const map = new Map<string, {
+      size: string;
+      totalCutFeet: number;
+      totalCut: string;
+      sticks: number;
+      pieces: number;
+      straightPieces: number;
+      bentPieces: number;
+      bends: number;
+      wasteFeet: number;
+      waste: string;
+      stickCost: number;
+      cutCostTotal: number;
+      bendCostTotal: number;
+      totalCost: number;
+    }>();
+
+    for (const line of schedule) {
+      const size = getScheduleRebarSizeLabel(line);
+      const qty = Number(line.qty || 0) || 0;
+      const cutFeet = Number(line.cutFeet || 0) || parseFeet(line.cutLength || "");
+      const bendCount = lineBendCount(line) * qty;
+      const existing = map.get(size) || {
+        size,
+        totalCutFeet: 0,
+        totalCut: "0'",
+        sticks: 0,
+        pieces: 0,
+        straightPieces: 0,
+        bentPieces: 0,
+        bends: 0,
+        wasteFeet: 0,
+        waste: "0'",
+        stickCost: 0,
+        cutCostTotal: 0,
+        bendCostTotal: 0,
+        totalCost: 0,
+      };
+      existing.totalCutFeet += cutFeet * qty;
+      existing.pieces += qty;
+      existing.bends += bendCount;
+      if (bendCount > 0) existing.bentPieces += qty;
+      else existing.straightPieces += qty;
+      map.set(size, existing);
+    }
+
+    const rows = Array.from(map.values()).sort((a, b) => {
+      const an = Number(a.size.replace(/[^0-9]/g, "")) || 999;
+      const bn = Number(b.size.replace(/[^0-9]/g, "")) || 999;
+      return an - bn || a.size.localeCompare(b.size);
+    });
+
+    for (const row of rows) {
+      row.sticks = row.totalCutFeet > 0 ? Math.ceil(row.totalCutFeet / stockFeet) : 0;
+      row.wasteFeet = Math.max(row.sticks * stockFeet - row.totalCutFeet, 0);
+      row.totalCut = formatFeet(row.totalCutFeet);
+      row.waste = formatFeet(row.wasteFeet);
+      row.stickCost = row.sticks * getStickPriceForSize(row.size);
+      row.cutCostTotal = row.pieces * cutCost;
+      row.bendCostTotal = row.bends * bendCost;
+      row.totalCost = row.stickCost + row.cutCostTotal + row.bendCostTotal;
+    }
+
+    const totalCost = rows.reduce((sum, row) => sum + row.totalCost, 0);
+    return { rows, totalCost };
+  }, [materialTakeoff?.stockLength, rebarGlobalParams, schedule, stickLength]);
 
 
   function getScheduleCategoryRowClass(line: ScheduleLine) {
@@ -2010,6 +2148,12 @@ export default function Home() {
       defaultVerticalToBase: rebarGlobalParams.defaultVerticalToBase,
       foundationRebarSize: firstRebarSize(lowerText, rebarGlobalParams.foundationRebarSize),
       pierRebarSize: firstContextRebarSize(lowerText, [/(?:pier|caisson|drilled pier)[\s\S]{0,120}(#\s*\d{1,3})/i], firstRebarSize(lowerText, rebarGlobalParams.pierRebarSize)),
+      pricePerStick3: rebarGlobalParams.pricePerStick3,
+      pricePerStick4: rebarGlobalParams.pricePerStick4,
+      pricePerStick5: rebarGlobalParams.pricePerStick5,
+      pricePerStick6: rebarGlobalParams.pricePerStick6,
+      cutCostEach: rebarGlobalParams.cutCostEach,
+      bendCostEach: rebarGlobalParams.bendCostEach,
     };
   }
 
@@ -2931,7 +3075,7 @@ export default function Home() {
 
   function materialSummaryRows() {
     return [
-      ["Summary", "Value"],
+      ["Overall Material Summary", "Value"],
       ["Total Cut", materialTakeoff?.totalCut || ""],
       ["Stock Length", materialTakeoff?.stockLength || ""],
       ["Sticks to Buy", materialTakeoff?.sticksToBuy ?? ""],
@@ -2943,6 +3087,59 @@ export default function Home() {
       ["Bends", materialTakeoff?.bendCount ?? ""],
       ["Stock sticks no change/no cut/no bend", materialTakeoff?.straightStockStickCount ?? 0],
       ["Sticks needing cut/bend/partial use", materialTakeoff?.cutOrBentStockStickCount ?? 0],
+      ["Estimated total cost", moneyLabel(materialByRebarSize.totalCost)],
+    ];
+  }
+
+  function materialBySizeExportRows() {
+    return [
+      ["Rebar Size Summary", "Sticks", "Total Cut", "Pieces", "Straight", "Bent Pieces", "Bends", "Waste", "Stick Cost", "Cut Cost", "Bend Cost", "Total Cost"],
+      ...materialByRebarSize.rows.map((row) => [
+        row.size,
+        row.sticks,
+        row.totalCut,
+        row.pieces,
+        row.straightPieces,
+        row.bentPieces,
+        row.bends,
+        row.waste,
+        moneyLabel(row.stickCost),
+        moneyLabel(row.cutCostTotal),
+        moneyLabel(row.bendCostTotal),
+        moneyLabel(row.totalCost),
+      ]),
+      ["TOTAL", "", "", "", "", "", "", "", "", "", "", moneyLabel(materialByRebarSize.totalCost)],
+    ];
+  }
+
+  function manualConfigExportRows() {
+    const typeCounts = rebarInfoRows.reduce<Record<string, number>>((acc, row) => {
+      const key = row.itemType || "Unknown";
+      acc[key] = (acc[key] || 0) + 1;
+      return acc;
+    }, {});
+
+    return [
+      ["Manual Config", "Value"],
+      ["Project", projectName],
+      ["Stick length", rebarGlobalParams.stickLength],
+      ["Default overlap", rebarGlobalParams.defaultOverlap],
+      ["Default vertical to base overlap", rebarGlobalParams.defaultVerticalToBase],
+      ["Default footing/wall rebar", rebarGlobalParams.foundationRebarSize],
+      ["Default pier rebar", rebarGlobalParams.pierRebarSize],
+      ["#3 price / 20' stick", rebarGlobalParams.pricePerStick3],
+      ["#4 price / 20' stick", rebarGlobalParams.pricePerStick4],
+      ["#5 price / 20' stick", rebarGlobalParams.pricePerStick5],
+      ["#6 price / 20' stick", rebarGlobalParams.pricePerStick6],
+      ["Cut cost / piece", rebarGlobalParams.cutCostEach],
+      ["Bend cost / bend", rebarGlobalParams.bendCostEach],
+      ["Pier mode", pierMode],
+      ["Manual rows", rebarInfoRows.length],
+      ...Object.entries(typeCounts).sort(([a], [b]) => a.localeCompare(b)).map(([type, count]) => [`Rows: ${type}`, count]),
+      ["Base longitudinal count", foundationRebarConfig.baseLongitudinalCount],
+      ["Base longitudinal spacing", foundationRebarConfig.baseLongitudinalSpacing],
+      ["Base traverse length", foundationRebarConfig.baseTraverseLength],
+      ["Horizontal bar spacing", foundationRebarConfig.horizontalBarSpacing],
     ];
   }
 
@@ -3223,7 +3420,9 @@ export default function Home() {
       "Field Order",
     ];
     const materialRows = materialSummaryRows();
-    const summarySheetRows = [summaryExportHeader, ...summaryRows, [], ...materialRows];
+    const bySizeRows = materialBySizeExportRows();
+    const manualRows = manualConfigExportRows();
+    const summarySheetRows = [summaryExportHeader, ...summaryRows, [], ...bySizeRows, [], ...materialRows, [], ...manualRows];
     const summaryStartRow = summaryRows.length + 3;
     const fullSheetRows = [fullHeader, ...fullRows];
     const summaryName = sheetNameSafe("Rebar Schedule Output");
@@ -3271,7 +3470,7 @@ export default function Home() {
       { name: "xl/styles.xml", content: xlsxStylesXml() },
       {
         name: "xl/worksheets/sheet1.xml",
-        content: xlsxSheetXml(summarySheetRows, [8, 18, 10, 10, 12, 24, 12, 24, 18, 38], 4, summaryStartRow),
+        content: xlsxSheetXml(summarySheetRows, [16, 18, 12, 12, 12, 14, 12, 14, 14, 14, 14, 14], 4, summaryStartRow),
       },
       {
         name: "xl/worksheets/sheet2.xml",
@@ -3808,6 +4007,9 @@ export default function Home() {
         const t = vCount === 1 ? 0.5 : i / Math.max(1, vCount - 1);
         return cx - rx * 0.68 + t * (rx * 1.36);
       });
+      const pierBent = yes(row.verticalBent);
+      const bendReturnLabel = row.verticalBentLength || "—";
+      const bendLen = Math.min(44, Math.max(24, (parseFeet(row.verticalBentLength) || 0.5) * 36));
       return (
         <svg viewBox="0 0 760 400" className="h-[390px] w-full" role="img" aria-label="Live pier cage preview">
           <text x="380" y="28" textAnchor="middle" fontSize="18" fontWeight="900">LIVE PREVIEW — Pier Cage</text>
@@ -3820,10 +4022,20 @@ export default function Home() {
           {hoopYs.map((y, i) => (
             <ellipse key={`hoop-${i}`} cx={cx} cy={y} rx={rx} ry={ry} fill={i === hoopYs.length - 1 ? "#eff6ff" : "none"} stroke="#2563eb" strokeWidth="4" opacity={i === hoopYs.length - 1 ? 1 : 0.85} />
           ))}
-          {frontBars.map((x, i) => (
-            <line key={`pier-v-${i}`} x1={x} y1={topY + 2} x2={x} y2={bottomY - 2} stroke="#1d4ed8" strokeWidth="5" strokeLinecap="round" />
-          ))}
-          <text x="380" y="348" textAnchor="middle" fontSize="14" fontWeight="900">Diameter: {row.diameter || "—"} · Cage height: {row.length || "—"} · Hoops drawn: {hoopCount} · Vertical bars drawn: {vCount}</text>
+          {frontBars.map((x, i) => {
+            const bendDirection = x < cx ? 1 : -1;
+            return (
+              <g key={`pier-v-${i}`}>
+                <line x1={x} y1={topY + 2} x2={x} y2={bottomY - 2} stroke="#1d4ed8" strokeWidth="5" strokeLinecap="round" />
+                {pierBent && <line x1={x} y1={bottomY - 2} x2={x + bendDirection * bendLen} y2={bottomY + 22} stroke="#dc2626" strokeWidth="5" strokeLinecap="round" />}
+              </g>
+            );
+          })}
+          {pierBent && <>
+            <text x={cx - rx - 10} y={bottomY + 36} textAnchor="end" fontSize="12" fontWeight="900" fill="#dc2626">bent return {bendReturnLabel}</text>
+            <text x={cx + rx + 10} y={bottomY + 36} fontSize="12" fontWeight="900" fill="#dc2626">bent return {bendReturnLabel}</text>
+          </>}
+          <text x="380" y="348" textAnchor="middle" fontSize="14" fontWeight="900">Diameter: {row.diameter || "—"} · Cage height: {row.length || "—"} · Hoops drawn: {hoopCount} · Vertical bars drawn: {vCount} · Bent: {row.verticalBent || "No"}</text>
           <text x="380" y="372" textAnchor="middle" fontSize="12" fontWeight="800" fill="#475569">Preview scales width from diameter and height from cage height.</text>
         </svg>
       );
@@ -4538,8 +4750,46 @@ export default function Home() {
 
         {materialTakeoff && (
           <section className="mb-4 rounded-2xl border border-blue-100 bg-white/70 bg-cover bg-center p-3 text-slate-950 shadow-sm" style={{ backgroundImage: "linear-gradient(rgba(255,255,255,0.72), rgba(255,255,255,0.78)), url('/rebar-background.png')" }}>
+            <div className="mb-3 flex flex-wrap items-end justify-between gap-2">
+              <div>
+                <div className="text-[11px] font-black uppercase tracking-[0.22em] text-blue-700">Material summary by rebar size</div>
+                <div className="text-xs font-semibold text-slate-600">Stick counts below are separated by #3/#4/#5/#6 so different bar sizes are not mixed together.</div>
+              </div>
+              <div className="rounded-xl bg-white/80 px-3 py-2 text-right">
+                <div className="text-[10px] font-black uppercase tracking-wide text-slate-600">Estimated total cost</div>
+                <div className="text-xl font-black text-emerald-800">{moneyLabel(materialByRebarSize.totalCost)}</div>
+              </div>
+            </div>
+
+            {materialByRebarSize.rows.length > 0 && (
+              <div className="mb-3 grid gap-2 md:grid-cols-2 xl:grid-cols-4">
+                {materialByRebarSize.rows.map((row) => (
+                  <div key={row.size} className="rounded-xl border border-blue-100 bg-white/82 p-3 shadow-sm">
+                    <div className="mb-2 flex items-center justify-between gap-2">
+                      <div className="text-2xl font-black text-blue-900">{row.size}</div>
+                      <div className="rounded-full bg-blue-50 px-2 py-1 text-xs font-black text-blue-700">{row.sticks} sticks</div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs font-bold text-slate-700">
+                      <div>Total cut</div><div className="text-right text-slate-950">{row.totalCut}</div>
+                      <div>Pieces</div><div className="text-right text-slate-950">{row.pieces}</div>
+                      <div>Straight</div><div className="text-right text-emerald-700">{row.straightPieces}</div>
+                      <div>Bent pcs</div><div className="text-right text-amber-700">{row.bentPieces}</div>
+                      <div>Bends</div><div className="text-right text-orange-700">{row.bends}</div>
+                      <div>Waste est.</div><div className="text-right text-red-700">{row.waste}</div>
+                    </div>
+                    <div className="mt-2 border-t border-slate-200 pt-2 text-xs font-bold text-slate-700">
+                      <div className="flex justify-between"><span>Stick cost</span><span>{moneyLabel(row.stickCost)}</span></div>
+                      <div className="flex justify-between"><span>Cut cost</span><span>{moneyLabel(row.cutCostTotal)}</span></div>
+                      <div className="flex justify-between"><span>Bend cost</span><span>{moneyLabel(row.bendCostTotal)}</span></div>
+                      <div className="mt-1 flex justify-between text-sm font-black text-emerald-800"><span>{row.size} total</span><span>{moneyLabel(row.totalCost)}</span></div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
             <div className="grid gap-2 md:grid-cols-5 xl:grid-cols-9">
-              <div className="rounded-xl bg-white/78 p-2"><div className="text-[10px] font-black uppercase tracking-wide text-blue-700">Sticks</div><div className="text-xl font-black">{materialTakeoff.sticksToBuy}</div></div>
+              <div className="rounded-xl bg-white/78 p-2"><div className="text-[10px] font-black uppercase tracking-wide text-blue-700">Total sticks</div><div className="text-xl font-black">{materialTakeoff.sticksToBuy}</div></div>
               <div className="rounded-xl bg-white/78 p-2"><div className="text-[10px] font-black uppercase tracking-wide text-slate-600">Total cut</div><div className="text-xl font-black">{materialTakeoff.totalCut}</div></div>
               <div className="rounded-xl bg-white/78 p-2"><div className="text-[10px] font-black uppercase tracking-wide text-slate-600">Stock len</div><div className="text-xl font-black">{materialTakeoff.stockLength}</div></div>
               <div className="rounded-xl bg-white/78 p-2"><div className="text-[10px] font-black uppercase tracking-wide text-slate-600">Available</div><div className="text-xl font-black">{materialTakeoff.availableLength}</div></div>
@@ -5567,9 +5817,12 @@ export default function Home() {
               </div>
 
               <div className="mb-4 flex flex-wrap items-center gap-2 rounded-xl border border-blue-200 bg-blue-50 p-3 text-sm">
-                <div className="mr-auto font-bold text-blue-950">Manual config file</div>
-                <button type="button" onClick={downloadManualConfigJson} className="rounded-lg border border-blue-300 bg-white px-3 py-2 font-bold text-blue-800 hover:bg-blue-100">Save manual config</button>
-                <button type="button" onClick={() => manualConfigImportInputRef.current?.click()} className="rounded-lg border border-blue-300 bg-white px-3 py-2 font-bold text-blue-800 hover:bg-blue-100">Load manual config</button>
+                <div className="mr-auto">
+                  <div className="font-bold text-blue-950">Manual config file</div>
+                  <div className="text-xs text-blue-800">Save Project already stores these settings; use these buttons only to move config between projects.</div>
+                </div>
+                <button type="button" onClick={downloadManualConfigJson} className="rounded-lg border border-blue-300 bg-white px-3 py-2 font-bold text-blue-800 hover:bg-blue-100">Export config only</button>
+                <button type="button" onClick={() => manualConfigImportInputRef.current?.click()} className="rounded-lg border border-blue-300 bg-white px-3 py-2 font-bold text-blue-800 hover:bg-blue-100">Import config only</button>
                 <input ref={manualConfigImportInputRef} type="file" accept="application/json,.json" className="hidden" onChange={(e) => importManualConfigJson(e.target.files?.[0] || null)} />
               </div>
 
@@ -5590,6 +5843,24 @@ export default function Home() {
                   </label>
                   <label className="font-semibold">Default rebar for piers <InfoTip text="Default bar size used for pier vertical bars and H-circles when not overridden." /> {showingCalculatedParams && getCompareBadge(rebarGlobalParams.pierRebarSize, getCalculatedGlobalValue("pierRebarSize"))}
                     <input value={displayedGlobalParams.pierRebarSize} onChange={(e) => updateRebarGlobalParam("pierRebarSize", e.target.value)} placeholder="#4" className="mt-1 w-full rounded border p-1.5 text-sm" />
+                  </label>
+                  <label className="font-semibold">#3 price / 20' stick <InfoTip text="Used only for cost estimate. Enter the supplier price per full stock stick for #3 rebar." />
+                    <input value={displayedGlobalParams.pricePerStick3} onChange={(e) => updateRebarGlobalParam("pricePerStick3", e.target.value)} placeholder="$0.00" className="mt-1 w-full rounded border p-1.5 text-sm" />
+                  </label>
+                  <label className="font-semibold">#4 price / 20' stick <InfoTip text="Used only for cost estimate. Enter the supplier price per full stock stick for #4 rebar." />
+                    <input value={displayedGlobalParams.pricePerStick4} onChange={(e) => updateRebarGlobalParam("pricePerStick4", e.target.value)} placeholder="$0.00" className="mt-1 w-full rounded border p-1.5 text-sm" />
+                  </label>
+                  <label className="font-semibold">#5 price / 20' stick <InfoTip text="Optional cost estimate for #5 rebar if used." />
+                    <input value={displayedGlobalParams.pricePerStick5} onChange={(e) => updateRebarGlobalParam("pricePerStick5", e.target.value)} placeholder="$0.00" className="mt-1 w-full rounded border p-1.5 text-sm" />
+                  </label>
+                  <label className="font-semibold">#6 price / 20' stick <InfoTip text="Optional cost estimate for #6 rebar if used." />
+                    <input value={displayedGlobalParams.pricePerStick6} onChange={(e) => updateRebarGlobalParam("pricePerStick6", e.target.value)} placeholder="$0.00" className="mt-1 w-full rounded border p-1.5 text-sm" />
+                  </label>
+                  <label className="font-semibold">Cut cost / piece <InfoTip text="Shop/labor cost for each cut piece in the generated schedule." />
+                    <input value={displayedGlobalParams.cutCostEach} onChange={(e) => updateRebarGlobalParam("cutCostEach", e.target.value)} placeholder="$0.00" className="mt-1 w-full rounded border p-1.5 text-sm" />
+                  </label>
+                  <label className="font-semibold">Bend cost / bend <InfoTip text="Shop/labor cost for each bend operation. A piece with two bent ends counts as two bends." />
+                    <input value={displayedGlobalParams.bendCostEach} onChange={(e) => updateRebarGlobalParam("bendCostEach", e.target.value)} placeholder="$0.00" className="mt-1 w-full rounded border p-1.5 text-sm" />
                   </label>
                 </div>
               </div>
