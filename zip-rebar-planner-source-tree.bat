@@ -115,7 +115,7 @@ if exist "android" (
 
     if exist "android\app\src" (
       robocopy "android\app\src" "%STAGE%\android\app\src" /E /NFL /NDL /NJH /NJS /NP ^
-        /XD assets build release .gradle >nul
+        /XD build release .gradle >nul
     )
   )
 )
@@ -165,7 +165,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "$stage='%STAGE%';" ^
   "$badDirs=@('node_modules','.next','.turbo','out','dist','coverage','.git','.vercel','.gradle','build','release','DerivedData','Pods','xcuserdata');" ^
   "Get-ChildItem $stage -Recurse -Force -Directory | Where-Object { $badDirs -contains $_.Name } | Sort-Object FullName -Descending | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue;" ^
-  "Get-ChildItem $stage -Recurse -Force -File | Where-Object { $_.Name -like '*.log' -or $_.Name -eq 'tsconfig.tsbuildinfo' -or $_.Extension -in '.aab','.apk','.ipa','.xcarchive' } | Remove-Item -Force -ErrorAction SilentlyContinue;"
+  "Get-ChildItem $stage -Recurse -Force -File | Where-Object { $_.Name -like '*.log' -or $_.Name -eq 'tsconfig.tsbuildinfo' -or $_.Extension -in '.aab','.apk','.ipa','.xcarchive','.keystore','.jks' } | Remove-Item -Force -ErrorAction SilentlyContinue;"
 
 REM ============================================================
 REM 6) Create flat-root ZIP from inside staging folder
@@ -195,7 +195,7 @@ echo ZIP CREATED:
 echo %ZIPFILE%
 echo.
 echo ZIP root should contain package.json, src, public, android, ios directly.
-echo It should NOT contain Users, node_modules, .next, build, release, .aab, .apk, .ipa, Pods, or .gradle.
+echo It should NOT contain Users, node_modules, .next, build, release, .aab, .apk, .ipa, Pods, .gradle, keystore, or jks.
 echo.
 pause
 endlocal

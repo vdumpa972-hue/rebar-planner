@@ -61,6 +61,7 @@ type RebarInfoRow = {
   numVerticalBars: string;
   verticalBent: "" | "Yes" | "No";
   verticalBentLength: string;
+  pierCageHandling: "build" | "readyMadeCostOnly" | "readyMadeAndRebar";
   cropImage: string; // legacy single-crop field
   cropImages: string[];
   count: string;
@@ -99,6 +100,9 @@ type RebarGlobalParams = {
   pricePerStick6: string;
   cutCostEach: string;
   bendCostEach: string;
+  readyMadePierRefDiameter: string;
+  readyMadePierRefHeight: string;
+  readyMadePierRefPrice: string;
 };
 
 type FoundationRebarConfig = {
@@ -456,6 +460,10 @@ function normalizeYesNo(value: unknown): "" | "Yes" | "No" {
   return value === "Yes" || value === "No" ? value : "";
 }
 
+function normalizePierCageHandling(value: unknown): RebarInfoRow["pierCageHandling"] {
+  return value === "readyMadeCostOnly" || value === "readyMadeAndRebar" ? value : "build";
+}
+
 function sortRebarInfoRowsByType(rows: RebarInfoRow[]) {
   return rows
     .map((row, originalIndex) => ({ row, originalIndex }))
@@ -488,6 +496,7 @@ function createRebarInfoRow(itemType: RebarInfoType = "Base/Bottom rebar", index
     numVerticalBars: "",
     verticalBent: "",
     verticalBentLength: "",
+    pierCageHandling: "build",
     cropImage: "",
     cropImages: [],
     count: itemType === "Vertical Rebar" ? "N/A" : "1",
@@ -582,6 +591,9 @@ export default function Home() {
     pricePerStick6: "",
     cutCostEach: "",
     bendCostEach: "",
+    readyMadePierRefDiameter: '24"',
+    readyMadePierRefHeight: '24"',
+    readyMadePierRefPrice: "",
   });
   const [foundationRebarConfig, setFoundationRebarConfig] = useState<FoundationRebarConfig>(defaultFoundationRebarConfig);
   const [rebarInfoRows, setRebarInfoRows] = useState<RebarInfoRow[]>(() => [createRebarInfoRow("Base/Bottom rebar", 1)]);
@@ -753,6 +765,7 @@ export default function Home() {
           clearanceSides: row.clearanceSides || `3"`,
           verticalSpacingAdjacent: row.verticalSpacingAdjacent || "",
           verticalBent: normalizeYesNo(row.verticalBent),
+          pierCageHandling: normalizePierCageHandling(row.pierCageHandling),
         };
       });
       setRebarInfoRows(sortRebarInfoRowsByType(normalizedRows));
@@ -1503,6 +1516,66 @@ export default function Home() {
     return `$${value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   }
 
+  function readyMadePierUnitCost(row: RebarInfoRow): number {
+    const refDiameterFeet = parseFeet(rebarGlobalParams.readyMadePierRefDiameter || "");
+    const refHeightFeet = parseFeet(rebarGlobalParams.readyMadePierRefHeight || "");
+    const refPrice = parseMoneyInput(rebarGlobalParams.readyMadePierRefPrice);
+    const rowDiameterFeet = parseFeet(row.diameter || "");
+    const rowHeightFeet = parseFeet(row.length || "");
+    if (!refDiameterFeet || !refHeightFeet || !refPrice || !rowDiameterFeet || !rowHeightFeet) return 0;
+    const refVolumeFactor = refDiameterFeet * refDiameterFeet * refHeightFeet;
+    const rowVolumeFactor = rowDiameterFeet * rowDiameterFeet * rowHeightFeet;
+    return refVolumeFactor > 0 ? refPrice * (rowVolumeFactor / refVolumeFactor) : 0;
+  }
+
+  const readyMadePierCageTakeoff = useMemo(() => {
+    const rows = rebarInfoRows
+      .filter((row) => row.itemType === "Pier" && (row.pierCageHandling === "readyMadeCostOnly" || row.pierCageHandling === "readyMadeAndRebar"))
+      .map((row) => {
+        const qty = Number(row.count || row.duplicateTimes || 0) || Number(row.duplicateTimes || row.count || 0) || 1;
+        const unitCost = readyMadePierUnitCost(row);
+        return {
+          id: row.id,
+          segment: row.segment || "Pier Cage",
+          mode: row.pierCageHandling,
+          qty,
+          diameter: row.diameter || "—",
+          height: row.length || "—",
+          unitCost,
+          totalCost: unitCost * qty,
+        };
+      });
+    const totalCost = rows.reduce((sum, row) => sum + row.totalCost, 0);
+    const totalQty = rows.reduce((sum, row) => sum + row.qty, 0);
+    return { rows, totalCost, totalQty };
+  }, [rebarInfoRows, rebarGlobalParams.readyMadePierRefDiameter, rebarGlobalParams.readyMadePierRefHeight, rebarGlobalParams.readyMadePierRefPrice]);
+
+  function makeReadyMadePierScheduleLines(rows: RebarInfoRow[]): ScheduleLine[] {
+    return rows
+      .filter((row) => row.itemType === "Pier" && row.pierCageHandling === "readyMadeCostOnly")
+      .map((row, index) => {
+        const qty = Number(row.count || row.duplicateTimes || 0) || Number(row.duplicateTimes || row.count || 0) || 1;
+        const unitCost = readyMadePierUnitCost(row);
+        const segment = (row.segment || `PIER_CAGE_${index + 1}`).replace(/\s+/g, "_").toUpperCase();
+        return {
+          mark: `${segment}_READY_MADE`,
+          prefix: `${segment}_READY_MADE`,
+          location: `${row.segment || "Pier Cage"} ready-made purchased cage: ${qty} cage${qty === 1 ? "" : "s"}, diameter ${row.diameter || "CHECK"}, height ${row.length || "CHECK"}. Cost only; not broken into vertical bars/hoops. Unit estimate ${moneyLabel(unitCost)}; total ${moneyLabel(unitCost * qty)}.`,
+          requiredLength: "Ready-made cage",
+          cutLength: "READY-MADE",
+          leftFunction: "purchased one unit",
+          usedLength: "ready-made",
+          rightFunction: "no cut/bend",
+          fieldOrder: "PIER READY-MADE CAGE",
+          totalUsedFeet: 0,
+          cutFeet: 0,
+          qty,
+          stockSource: "Purchased cage",
+          wasteFit: "Not part of rebar cut list",
+        };
+      });
+  }
+
   function lineBendCount(line: ScheduleLine): number {
     const left = String(line.leftFunction || "").toLowerCase();
     const right = String(line.rightFunction || "").toLowerCase();
@@ -1542,6 +1615,7 @@ export default function Home() {
     }>();
 
     for (const line of schedule) {
+      if (String(line.cutLength || "").toUpperCase() === "READY-MADE") continue;
       const size = getScheduleRebarSizeLabel(line);
       const qty = Number(line.qty || 0) || 0;
       const cutFeet = Number(line.cutFeet || 0) || parseFeet(line.cutLength || "");
@@ -1587,9 +1661,10 @@ export default function Home() {
       row.totalCost = row.stickCost + row.cutCostTotal + row.bendCostTotal;
     }
 
-    const totalCost = rows.reduce((sum, row) => sum + row.totalCost, 0);
-    return { rows, totalCost };
-  }, [materialTakeoff?.stockLength, rebarGlobalParams, schedule, stickLength]);
+    const rebarOnlyCost = rows.reduce((sum, row) => sum + row.totalCost, 0);
+    const totalCost = rebarOnlyCost + readyMadePierCageTakeoff.totalCost;
+    return { rows, totalCost, rebarOnlyCost };
+  }, [materialTakeoff?.stockLength, rebarGlobalParams, schedule, stickLength, readyMadePierCageTakeoff.totalCost]);
 
 
   function getScheduleCategoryRowClass(line: ScheduleLine) {
@@ -2154,6 +2229,9 @@ export default function Home() {
       pricePerStick6: rebarGlobalParams.pricePerStick6,
       cutCostEach: rebarGlobalParams.cutCostEach,
       bendCostEach: rebarGlobalParams.bendCostEach,
+      readyMadePierRefDiameter: rebarGlobalParams.readyMadePierRefDiameter,
+      readyMadePierRefHeight: rebarGlobalParams.readyMadePierRefHeight,
+      readyMadePierRefPrice: rebarGlobalParams.readyMadePierRefPrice,
     };
   }
 
@@ -2919,6 +2997,7 @@ export default function Home() {
 
     rowsToCheck.forEach((row, index) => {
       const rowLabel = row.segment || `Row ${index + 1}`;
+      const isReadyMadePierCostOnly = row.itemType === "Pier" && row.pierCageHandling === "readyMadeCostOnly";
       lengthFields.forEach(({ field, label }) => {
         const rawValue = String(row[field] || "");
         if (!valueHasLengthUnit(rawValue)) {
@@ -2935,7 +3014,7 @@ export default function Home() {
         errors.push(rowFieldErrorKey(row.id, "side2BentLength"));
         messages.push(`${rowLabel}: Finish end is bent, so enter a bent overlap length with units, like 24".`);
       }
-      if (row.verticalBent === "Yes" && !String(row.verticalBentLength || "").trim()) {
+      if (!isReadyMadePierCostOnly && row.verticalBent === "Yes" && !String(row.verticalBentLength || "").trim()) {
         errors.push(rowFieldErrorKey(row.id, "verticalBentLength"));
         messages.push(`${rowLabel}: Vertical bent is Yes, so enter a bent overlap length with units, like 6".`);
       }
@@ -2973,6 +3052,7 @@ export default function Home() {
   async function generateSchedule() {
     if (isGeneratingSchedule) return;
     const sourceRows = rebarInfoRows;
+    const calculationRows = sourceRows.filter((row) => !(row.itemType === "Pier" && row.pierCageHandling === "readyMadeCostOnly"));
     const sourceGlobals = rebarGlobalParams;
     const sourceLabel = "manual parameters";
     const lengthUnitValidation = validateLengthUnitsBeforeGenerate(sourceRows);
@@ -2994,7 +3074,7 @@ export default function Home() {
       await new Promise((resolve) => window.setTimeout(resolve, 80));
 
       const result = generateManualRebarSchedule({
-        rows: sourceRows,
+        rows: calculationRows,
         stockLength: sourceGlobals.stickLength,
         defaultOverlap: sourceGlobals.defaultOverlap,
         defaultVerticalToBase: sourceGlobals.defaultVerticalToBase,
@@ -3005,29 +3085,44 @@ export default function Home() {
       setScheduleGenerationStatus("Splitting continuous bars by stick length, adding lap splices, and placing bent returns...");
       await new Promise((resolve) => window.setTimeout(resolve, 80));
 
+      const readyMadePierLines = makeReadyMadePierScheduleLines(sourceRows);
+      const finalSchedule = [...result.schedule, ...readyMadePierLines];
+      const finalSummary = readyMadePierLines.length
+        ? [
+            ...result.summary,
+            ...readyMadePierLines.map((line) => ({
+              prefix: line.prefix,
+              description: line.location,
+              qty: line.qty,
+              requiredLength: line.requiredLength,
+              totalUsed: line.usedLength,
+              status: "Purchased ready-made cage",
+            })),
+          ]
+        : result.summary;
       const generatedAtIso = new Date().toISOString();
       const savedGeneratedSchedule: SavedGeneratedSchedule = {
         generatedAtIso,
         sourceLabel,
-        schedule: result.schedule,
-        summary: result.summary,
+        schedule: finalSchedule,
+        summary: finalSummary,
         materialTakeoff: result.materialTakeoff,
         reviewedPieceMarks: [],
         validationWarnings: result.validationWarnings || [],
       };
       setReviewedPieceMarks([]);
-      setSchedule(result.schedule);
-      setSummary(result.summary);
+      setSchedule(finalSchedule);
+      setSummary(finalSummary);
       setMaterialTakeoff(result.materialTakeoff);
       setEngineValidationWarnings(result.validationWarnings || []);
       setSavedScheduleAt(generatedAtIso);
       setFilter("ALL");
-      setSelectedMark(result.schedule[0]?.mark || "");
-      setSelectedPrefix(result.schedule[0]?.prefix || "");
+      setSelectedMark(finalSchedule[0]?.mark || "");
+      setSelectedPrefix(finalSchedule[0]?.prefix || "");
       setScheduleGenerationStatus("Saving latest generated schedule with project...");
       await saveGeneratedScheduleOnly(savedGeneratedSchedule);
       setScheduleGenerationStatus(
-        `Completed and saved. Generated ${result.schedule.length} schedule lines, ${result.materialTakeoff.cutCount} cut pieces: ${result.materialTakeoff.bentPieceCount} need bending and ${result.materialTakeoff.straightPieceCount} stay straight. Sticks to buy: ${result.materialTakeoff.sticksToBuy}.`,
+        `Completed and saved. Generated ${finalSchedule.length} schedule lines, ${result.materialTakeoff.cutCount} cut pieces: ${result.materialTakeoff.bentPieceCount} need bending and ${result.materialTakeoff.straightPieceCount} stay straight. Sticks to buy: ${result.materialTakeoff.sticksToBuy}.`,
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -3087,6 +3182,8 @@ export default function Home() {
       ["Bends", materialTakeoff?.bendCount ?? ""],
       ["Stock sticks no change/no cut/no bend", materialTakeoff?.straightStockStickCount ?? 0],
       ["Sticks needing cut/bend/partial use", materialTakeoff?.cutOrBentStockStickCount ?? 0],
+      ["Rebar-only estimated cost", moneyLabel(materialByRebarSize.rebarOnlyCost)],
+      ["Ready-made pier cage estimated cost", moneyLabel(readyMadePierCageTakeoff.totalCost)],
       ["Estimated total cost", moneyLabel(materialByRebarSize.totalCost)],
     ];
   }
@@ -3106,6 +3203,20 @@ export default function Home() {
         moneyLabel(row.stickCost),
         moneyLabel(row.cutCostTotal),
         moneyLabel(row.bendCostTotal),
+        moneyLabel(row.totalCost),
+      ]),
+      ...readyMadePierCageTakeoff.rows.map((row) => [
+        `Pier cage ${row.segment}`,
+        row.qty,
+        `${row.diameter} x ${row.height}`,
+        "Purchased cage",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
         moneyLabel(row.totalCost),
       ]),
       ["TOTAL", "", "", "", "", "", "", "", "", "", "", moneyLabel(materialByRebarSize.totalCost)],
@@ -3133,6 +3244,10 @@ export default function Home() {
       ["#6 price / 20' stick", rebarGlobalParams.pricePerStick6],
       ["Cut cost / piece", rebarGlobalParams.cutCostEach],
       ["Bend cost / bend", rebarGlobalParams.bendCostEach],
+      ["Ready-made pier reference diameter", rebarGlobalParams.readyMadePierRefDiameter],
+      ["Ready-made pier reference height", rebarGlobalParams.readyMadePierRefHeight],
+      ["Ready-made pier reference price", rebarGlobalParams.readyMadePierRefPrice],
+      ["Ready-made pier cage estimated cost", moneyLabel(readyMadePierCageTakeoff.totalCost)],
       ["Pier mode", pierMode],
       ["Manual rows", rebarInfoRows.length],
       ...Object.entries(typeCounts).sort(([a], [b]) => a.localeCompare(b)).map(([type, count]) => [`Rows: ${type}`, count]),
@@ -4008,25 +4123,42 @@ export default function Home() {
         return cx - rx * 0.68 + t * (rx * 1.36);
       });
       const pierBent = yes(row.verticalBent);
+      const isReadyMadeOnly = row.pierCageHandling === "readyMadeCostOnly";
+      const isCompareMode = row.pierCageHandling === "readyMadeAndRebar";
+      const cageStroke = isReadyMadeOnly ? "#16a34a" : isCompareMode ? "#0f766e" : "#2563eb";
+      const verticalStroke = isReadyMadeOnly ? "#15803d" : isCompareMode ? "#0f766e" : "#1d4ed8";
+      const cageFill = isReadyMadeOnly ? "#ecfdf5" : "#eff6ff";
       const bendReturnLabel = row.verticalBentLength || "—";
       const bendLen = Math.min(44, Math.max(24, (parseFeet(row.verticalBentLength) || 0.5) * 36));
       return (
         <svg viewBox="0 0 760 400" className="h-[390px] w-full" role="img" aria-label="Live pier cage preview">
           <text x="380" y="28" textAnchor="middle" fontSize="18" fontWeight="900">LIVE PREVIEW — Pier Cage</text>
-          <line x1={cx - rx} y1={topY} x2={cx - rx} y2={bottomY} stroke="#2563eb" strokeWidth="4" />
-          <line x1={cx + rx} y1={topY} x2={cx + rx} y2={bottomY} stroke="#2563eb" strokeWidth="4" />
+          {isReadyMadeOnly && (
+            <g>
+              <rect x="238" y="36" width="284" height="28" rx="14" fill="#dcfce7" stroke="#16a34a" strokeWidth="2" />
+              <text x="380" y="55" textAnchor="middle" fontSize="13" fontWeight="900" fill="#166534">READY-MADE PURCHASED CAGE</text>
+            </g>
+          )}
+          {isCompareMode && (
+            <g>
+              <rect x="246" y="36" width="268" height="28" rx="14" fill="#ccfbf1" stroke="#0f766e" strokeWidth="2" />
+              <text x="380" y="55" textAnchor="middle" fontSize="13" fontWeight="900" fill="#115e59">COMPARE: COST + REBAR BREAKDOWN</text>
+            </g>
+          )}
+          <line x1={cx - rx} y1={topY} x2={cx - rx} y2={bottomY} stroke={cageStroke} strokeWidth="4" />
+          <line x1={cx + rx} y1={topY} x2={cx + rx} y2={bottomY} stroke={cageStroke} strokeWidth="4" />
           <line x1={cx + rx + 34} y1={topY} x2={cx + rx + 34} y2={bottomY} stroke="#dc2626" strokeWidth="2" markerEnd={`url(#arrow-${row.id})`} />
           <text x={cx + rx + 44} y={(topY + bottomY) / 2} fontSize="13" fontWeight="900" fill="#dc2626">{row.length || "—"} height</text>
           <line x1={cx - rx} y1={bottomY + ry + 24} x2={cx + rx} y2={bottomY + ry + 24} stroke="#7e22ce" strokeWidth="2" markerEnd={`url(#arrow-${row.id})`} />
           <text x={cx} y={bottomY + ry + 44} textAnchor="middle" fontSize="13" fontWeight="900" fill="#7e22ce">{row.diameter || "—"} diameter</text>
           {hoopYs.map((y, i) => (
-            <ellipse key={`hoop-${i}`} cx={cx} cy={y} rx={rx} ry={ry} fill={i === hoopYs.length - 1 ? "#eff6ff" : "none"} stroke="#2563eb" strokeWidth="4" opacity={i === hoopYs.length - 1 ? 1 : 0.85} />
+            <ellipse key={`hoop-${i}`} cx={cx} cy={y} rx={rx} ry={ry} fill={i === hoopYs.length - 1 ? cageFill : "none"} stroke={cageStroke} strokeWidth="4" opacity={i === hoopYs.length - 1 ? 1 : 0.85} />
           ))}
           {frontBars.map((x, i) => {
             const bendDirection = x < cx ? 1 : -1;
             return (
               <g key={`pier-v-${i}`}>
-                <line x1={x} y1={topY + 2} x2={x} y2={bottomY - 2} stroke="#1d4ed8" strokeWidth="5" strokeLinecap="round" />
+                <line x1={x} y1={topY + 2} x2={x} y2={bottomY - 2} stroke={verticalStroke} strokeWidth="5" strokeLinecap="round" />
                 {pierBent && <line x1={x} y1={bottomY - 2} x2={x + bendDirection * bendLen} y2={bottomY + 22} stroke="#dc2626" strokeWidth="5" strokeLinecap="round" />}
               </g>
             );
@@ -4036,6 +4168,7 @@ export default function Home() {
             <text x={cx + rx + 10} y={bottomY + 36} fontSize="12" fontWeight="900" fill="#dc2626">bent return {bendReturnLabel}</text>
           </>}
           <text x="380" y="348" textAnchor="middle" fontSize="14" fontWeight="900">Diameter: {row.diameter || "—"} · Cage height: {row.length || "—"} · Hoops drawn: {hoopCount} · Vertical bars drawn: {vCount} · Bent: {row.verticalBent || "No"}</text>
+          <text x="380" y="366" textAnchor="middle" fontSize="12" fontWeight="900" fill={isReadyMadeOnly ? "#166534" : isCompareMode ? "#115e59" : "#475569"}>{isReadyMadeOnly ? "This row will be added as ONE purchased cage line, not broken into rebar pieces." : isCompareMode ? "This row shows ready-made cage cost and still generates rebar pieces for comparison." : "This row will be broken into vertical bars and hoops."}</text>
           <text x="380" y="372" textAnchor="middle" fontSize="12" fontWeight="800" fill="#475569">Preview scales width from diameter and height from cage height.</text>
         </svg>
       );
@@ -4093,10 +4226,11 @@ export default function Home() {
       if (!row.length.trim()) warnings.push(`${label}: missing vertical straight length.`);
     }
     if (row.itemType === "Pier") {
+      const readyMadeCostOnly = row.pierCageHandling === "readyMadeCostOnly";
       if (!row.diameter.trim()) warnings.push(`${label}: missing pier diameter.`);
       if (!row.length.trim()) warnings.push(`${label}: missing pier cage length.`);
       if (!row.clearanceSides.trim()) warnings.push(`${label}: missing side spacing for H-circle diameter.`);
-      if (!row.numVerticalBars.trim() || row.numVerticalBars.toUpperCase() === "N/A") warnings.push(`${label}: missing pier vertical bars count.`);
+      if (!readyMadeCostOnly && (!row.numVerticalBars.trim() || row.numVerticalBars.toUpperCase() === "N/A")) warnings.push(`${label}: missing pier vertical bars count.`);
     }
     return warnings;
   });
@@ -4785,6 +4919,24 @@ export default function Home() {
                     </div>
                   </div>
                 ))}
+              </div>
+            )}
+
+            {readyMadePierCageTakeoff.rows.length > 0 && (
+              <div className="mb-3 rounded-xl border border-purple-200 bg-purple-50/90 p-3 text-sm text-purple-950">
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                  <div className="font-black">Ready-made pier cage cost-only lines</div>
+                  <div className="rounded-full bg-white px-3 py-1 font-black text-purple-800">{moneyLabel(readyMadePierCageTakeoff.totalCost)}</div>
+                </div>
+                <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+                  {readyMadePierCageTakeoff.rows.map((row) => (
+                    <div key={row.id} className="rounded-lg border border-purple-200 bg-white p-2">
+                      <div className="font-black">{row.segment}</div>
+                      <div className="text-xs font-bold text-slate-700">Qty {row.qty} · {row.diameter} × {row.height} · {row.mode === "readyMadeAndRebar" ? "compare + rebar" : "cost only"}</div>
+                      <div className="text-xs font-bold text-purple-800">Unit {moneyLabel(row.unitCost)} · Total {moneyLabel(row.totalCost)}</div>
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
 
@@ -5862,6 +6014,15 @@ export default function Home() {
                   <label className="font-semibold">Bend cost / bend <InfoTip text="Shop/labor cost for each bend operation. A piece with two bent ends counts as two bends." />
                     <input value={displayedGlobalParams.bendCostEach} onChange={(e) => updateRebarGlobalParam("bendCostEach", e.target.value)} placeholder="$0.00" className="mt-1 w-full rounded border p-1.5 text-sm" />
                   </label>
+                  <label className="font-semibold">Ready-made pier ref diameter <InfoTip text="Diameter of a known ready-made cage price. Example: if a 24 inch diameter cage costs $175, enter 24 inches here." />
+                    <input value={displayedGlobalParams.readyMadePierRefDiameter} onChange={(e) => updateRebarGlobalParam("readyMadePierRefDiameter", e.target.value)} placeholder={'24"'} className="mt-1 w-full rounded border p-1.5 text-sm" />
+                  </label>
+                  <label className="font-semibold">Ready-made pier ref height <InfoTip text="Height of the known ready-made cage price. The app scales price by diameter squared times height." />
+                    <input value={displayedGlobalParams.readyMadePierRefHeight} onChange={(e) => updateRebarGlobalParam("readyMadePierRefHeight", e.target.value)} placeholder={'24"'} className="mt-1 w-full rounded border p-1.5 text-sm" />
+                  </label>
+                  <label className="font-semibold">Ready-made pier ref price <InfoTip text="Known supplier price for the reference ready-made cage. Used to interpolate your actual pier cage price." />
+                    <input value={displayedGlobalParams.readyMadePierRefPrice} onChange={(e) => updateRebarGlobalParam("readyMadePierRefPrice", e.target.value)} placeholder="$0.00" className="mt-1 w-full rounded border p-1.5 text-sm" />
+                  </label>
                 </div>
               </div>
 
@@ -6063,6 +6224,19 @@ export default function Home() {
                       {row.itemType === "Pier" && (
                         <>
                           <span className="rp-line-break" /><span className="rp-row-tag">Pier cage</span>
+                          <label className="flex min-w-[420px] flex-1 flex-col text-[11px] font-bold text-slate-700">Pier Handling
+                            <select
+                              value={row.pierCageHandling || "build"}
+                              onChange={(e) => updateRebarInfoRow(row.id, "pierCageHandling", normalizePierCageHandling(e.target.value))}
+                              className="mt-1 h-12 min-h-[48px] w-full rounded border-2 border-slate-900 bg-white px-4 py-2 text-base font-bold leading-normal text-slate-900"
+                            >
+                              <option value="build">Build from rebar</option>
+                              <option value="readyMadeCostOnly">Ready-made cage</option>
+                              <option value="readyMadeAndRebar">Compare both</option>
+                            </select>
+                            <span className="mt-1 text-[11px] font-normal leading-4 text-slate-500">Ready-made cage = one purchased unit. Adds cage cost only and skips vertical/hoop pieces.</span>
+                          </label>
+                          <span className="rp-line-break" />
                           {rowField({ label: "Pier Diameter", info: "Outside concrete pier diameter. Include units, for example 30&quot;.", value: row.diameter, field: "diameter", placeholder: '30"', className: "w-28" })}
                           {rowField({ label: "Cage Height", info: "Pier cage/bar height. Include units, for example 30&quot;.", value: row.length, field: "length", placeholder: '30"', className: "w-28" })}
                           {rowField({ label: "Hoop Count", info: "Number of horizontal circles/hoops. Use N/A to calculate from spacing.", value: row.horizontalCircleCount, field: "horizontalCircleCount", placeholder: "N/A", className: "w-28" })}

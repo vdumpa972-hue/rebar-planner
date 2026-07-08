@@ -23,8 +23,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "$tmpName = '_backup_stage_' + [guid]::NewGuid().ToString();" ^
   "$tmp = Join-Path $src $tmpName;" ^
   "New-Item -ItemType Directory -Path $tmp | Out-Null;" ^
-  "$exclude = @('node_modules','.next','.turbo','out','dist','coverage','.git','.vercel','source-zips','rebar-planner-zips','backups','android','ios',$tmpName);" ^
+  "$exclude = @('node_modules','.next','.turbo','out','dist','coverage','.git','.vercel','source-zips','rebar-planner-zips','backups',$tmpName);" ^
   "Get-ChildItem -Force | Where-Object { $exclude -notcontains $_.Name } | ForEach-Object { Copy-Item $_.FullName -Destination $tmp -Recurse -Force };" ^
+  "$badDirs=@('node_modules','.next','.turbo','out','dist','coverage','.git','.vercel','.gradle','build','release','DerivedData','Pods','xcuserdata');" ^
+  "Get-ChildItem $tmp -Recurse -Force -Directory | Where-Object { $badDirs -contains $_.Name } | Sort-Object FullName -Descending | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue;" ^
+  "Get-ChildItem $tmp -Recurse -Force -File | Where-Object { $_.Name -like '*.log' -or $_.Name -eq 'tsconfig.tsbuildinfo' -or $_.Extension -in '.aab','.apk','.ipa','.xcarchive' -or $_.Extension -in '.keystore','.jks' } | Remove-Item -Force -ErrorAction SilentlyContinue;" ^
   "Compress-Archive -Path (Join-Path $tmp '*') -DestinationPath $dest -Force;" ^
   "Remove-Item $tmp -Recurse -Force"
 
