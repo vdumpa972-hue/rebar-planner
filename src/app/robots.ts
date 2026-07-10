@@ -4,8 +4,8 @@ export default function robots(): MetadataRoute.Robots {
   return {
     rules: {
       userAgent: "*",
-      allow: ["/", "/pricing", "/plans", "/about", "/docs", "/privacy", "/terms", "/support", "/account-deletion", "/delete-account"],
-      disallow: ["/api/", "/auth/", "/owner/", "/employee/", "/client/", "/admin/", "/super-admin/", "/profile/", "/billing/", "/subscription/", "/master/", "/follower/", "/trial/", "/stripe-success/"],
+      allow: ["/", "/about", "/docs", "/pricing", "/privacy", "/support", "/delete-account"],
+      disallow: ["/api/", "/admin/", "/auth/", "/billing/"],
     },
     sitemap: "https://rebar-planner.vercel.app/sitemap.xml",
     host: "https://rebar-planner.vercel.app",
