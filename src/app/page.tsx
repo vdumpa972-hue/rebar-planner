@@ -7038,6 +7038,10 @@ export default function Home() {
                 <span className="rounded-full bg-slate-100 px-3 py-1">Plan: {isOwner ? "Owner" : "User"}</span>
                 <span className="rounded-full bg-slate-100 px-3 py-1">Trial/Billing: future</span>
               </div>
+              <nav aria-label="Other apps from the same developer" className="flex flex-wrap gap-3 text-xs font-bold">
+                <a href="https://landscapebuddy.net/" target="_blank" rel="noopener noreferrer" className="underline decoration-slate-300 underline-offset-4 hover:text-slate-950">Landscape Buddy</a>
+                <a href="https://prayer-master.vercel.app/" target="_blank" rel="noopener noreferrer" className="underline decoration-slate-300 underline-offset-4 hover:text-slate-950">Prayer Companion</a>
+              </nav>
             </div>
           </footer>
           </div>
