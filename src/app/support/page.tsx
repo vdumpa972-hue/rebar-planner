@@ -1,4 +1,16 @@
+import type { Metadata } from "next";
 import Link from "next/link";
+export const metadata: Metadata = {
+  title: "Support | Rebar Planner",
+  description: "Get help with Rebar Planner projects, calculations, uploads, exports, billing, and account access.",
+  alternates: { canonical: "https://rebar-planner.vercel.app/support" },
+  openGraph: {
+    title: "Support | Rebar Planner",
+    description: "Get help with Rebar Planner projects, calculations, uploads, exports, billing, and account access.",
+    url: "https://rebar-planner.vercel.app/support",
+    type: "website",
+  },
+};
 
 const ticketChecklist = [
   "Project backup JSON",

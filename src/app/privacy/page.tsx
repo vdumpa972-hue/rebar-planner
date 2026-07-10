@@ -1,3 +1,17 @@
+import type { Metadata } from "next";
+
+export const metadata: Metadata = {
+  title: "Privacy Policy | Rebar Planner",
+  description: "Learn how Rebar Planner handles account, project, uploaded plan, billing, and support information.",
+  alternates: { canonical: "https://rebar-planner.vercel.app/privacy" },
+  openGraph: {
+    title: "Privacy Policy | Rebar Planner",
+    description: "Learn how Rebar Planner handles account, project, uploaded plan, billing, and support information.",
+    url: "https://rebar-planner.vercel.app/privacy",
+    type: "website",
+  },
+};
+
 export default function PrivacyPage() {
   return (
     <main style={{ maxWidth: 900, margin: "40px auto", padding: 20 }}>

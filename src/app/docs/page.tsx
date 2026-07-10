@@ -1,4 +1,16 @@
+import type { Metadata } from "next";
 import Link from "next/link";
+export const metadata: Metadata = {
+  title: "Rebar Planner Documentation",
+  description: "Follow the Rebar Planner workflow for projects, plan evidence, rebar rows, schedules, validation, and exports.",
+  alternates: { canonical: "https://rebar-planner.vercel.app/docs" },
+  openGraph: {
+    title: "Rebar Planner Documentation",
+    description: "Follow the Rebar Planner workflow for projects, plan evidence, rebar rows, schedules, validation, and exports.",
+    url: "https://rebar-planner.vercel.app/docs",
+    type: "website",
+  },
+};
 
 const workflowSections = [
   ["1. Create a project", "Upload the foundation PDF, name the project, choose status, and save early."],

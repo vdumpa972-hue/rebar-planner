@@ -1,4 +1,16 @@
+import type { Metadata } from "next";
 import Link from "next/link";
+export const metadata: Metadata = {
+  title: "About Rebar Planner",
+  description: "Learn how Rebar Planner organizes foundation reinforcement, cut lists, stock lengths, and waste-aware planning.",
+  alternates: { canonical: "https://rebar-planner.vercel.app/about" },
+  openGraph: {
+    title: "About Rebar Planner",
+    description: "Learn how Rebar Planner organizes foundation reinforcement, cut lists, stock lengths, and waste-aware planning.",
+    url: "https://rebar-planner.vercel.app/about",
+    type: "website",
+  },
+};
 
 export default function AboutPage() {
   return (

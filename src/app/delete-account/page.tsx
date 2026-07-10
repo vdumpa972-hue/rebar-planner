@@ -1,3 +1,17 @@
+import type { Metadata } from "next";
+
+export const metadata: Metadata = {
+  title: "Account Deletion | Rebar Planner",
+  description: "Request deletion of a Rebar Planner account and associated saved project data.",
+  alternates: { canonical: "https://rebar-planner.vercel.app/delete-account" },
+  openGraph: {
+    title: "Account Deletion | Rebar Planner",
+    description: "Request deletion of a Rebar Planner account and associated saved project data.",
+    url: "https://rebar-planner.vercel.app/delete-account",
+    type: "website",
+  },
+};
+
 export default function DeleteAccountPage() {
   return (
     <main style={{ maxWidth: 900, margin: "40px auto", padding: 20, fontFamily: "Arial, sans-serif" }}>
