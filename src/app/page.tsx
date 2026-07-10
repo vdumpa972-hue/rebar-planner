@@ -1858,6 +1858,16 @@ export default function Home() {
               <div className="rounded-xl border p-4"><div className="text-lg font-bold">3. Generate and export</div><p className="mt-3 text-slate-600">Build the schedule, review warnings, and export the shop package.</p></div>
             </div>
           </section>
+
+          <section className="mt-6 rounded-2xl border bg-white/90 p-4 shadow-sm">
+            <div className="text-sm font-black uppercase tracking-[0.2em] text-blue-700">Before you start</div>
+            <h2 className="mt-2 text-2xl font-bold">Know what the planner does.</h2>
+            <div className="mt-4 grid gap-3 md:grid-cols-3">
+              <div className="rounded-xl border p-4"><div className="text-lg font-bold">Built for planning</div><p className="mt-3 text-slate-600">Use it to organize quantities, cuts, bends, laps, cages, and project evidence before fabrication.</p></div>
+              <div className="rounded-xl border p-4"><div className="text-lg font-bold">Review remains essential</div><p className="mt-3 text-slate-600">A qualified person should verify plan interpretation, code requirements, and final shop information.</p></div>
+              <div className="rounded-xl border p-4"><div className="text-lg font-bold">Guest demo available</div><p className="mt-3 text-slate-600">Open the prepared demo to explore the workflow before creating or purchasing an account.</p></div>
+            </div>
+          </section>
         </div>
       </main>
     );
