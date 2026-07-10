@@ -6224,7 +6224,7 @@ export default function Home() {
                       {row.itemType === "Pier" && (
                         <>
                           <span className="rp-line-break" /><span className="rp-row-tag">Pier cage</span>
-                          <label className="flex min-w-[420px] flex-1 flex-col text-[11px] font-bold text-slate-700">Pier Handling
+                          <label className="flex w-full min-w-0 flex-1 flex-col sm:min-w-[420px] text-[11px] font-bold text-slate-700">Pier Handling
                             <select
                               value={row.pierCageHandling || "build"}
                               onChange={(e) => updateRebarInfoRow(row.id, "pierCageHandling", normalizePierCageHandling(e.target.value))}
@@ -6257,10 +6257,10 @@ export default function Home() {
                     <RebarRowLivePreview row={row} />
 
                     {plannerView === "advanced" && cropRefs.length > 0 && (
-                      <div className="mt-1 flex items-center gap-2 text-[11px]" data-crop-dropdown>
+                      <div className="relative mt-1 flex items-center gap-2 text-[11px]" data-crop-dropdown>
                         <button type="button" onClick={() => setOpenCropDropdownRowId((current) => current === row.id ? "" : row.id)} className="rounded border border-amber-300 bg-white px-2 py-1 font-bold text-slate-700">Crops: {selectedCropSummary(row)} ▾</button>
                         {openCropDropdownRowId === row.id && (
-                          <div className="absolute z-30 mt-8 max-h-96 w-[520px] overflow-auto rounded border bg-white p-2 shadow-lg">
+                          <div className="absolute left-0 right-0 z-30 mt-8 max-h-96 w-full max-w-[520px] overflow-auto rounded border bg-white p-2 shadow-lg">
                             <div className="grid gap-2 sm:grid-cols-2">
                               {cropRefs.map((crop) => {
                                 const selected = (row.cropImages || []).includes(crop.id) || row.cropImage === crop.id;
@@ -6345,7 +6345,7 @@ export default function Home() {
                     SW-H-WALL-T / SW-H-BASE-T
                   </button>
 
-                  <div className="flex w-full items-stretch justify-center gap-2">
+                  <div className="flex w-full flex-col items-stretch justify-center gap-2 sm:flex-row">
                     <div className="grid content-center gap-2">
                       {[
                         "EW-H-BASE-O",
@@ -6366,7 +6366,7 @@ export default function Home() {
                       ))}
                     </div>
 
-                    <div className="flex min-h-48 min-w-96 flex-[1.5] items-center justify-center rounded border-4 border-gray-400 bg-white text-center text-gray-500">
+                    <div className="flex min-h-48 min-w-0 w-full flex-[1.5] items-center justify-center rounded border-4 border-gray-400 bg-white p-3 text-center text-gray-500 sm:min-w-96">
                       Foundation Plan Area<br />Top/Bottom = Side Walls<br />Left/Right = End Walls
                     </div>
 
